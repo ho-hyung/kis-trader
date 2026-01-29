@@ -408,6 +408,119 @@ class KisApi:
             "request_body": body,
         }
 
+    def buy_limit_order(self, market: str, code: str, quantity: int, price: float, exchange: str = "NASD") -> dict:
+        """
+        지정가 매수 주문
+
+        Args:
+            market: "KR" (국내) 또는 "US" (미국)
+            code: 종목코드
+            quantity: 주문 수량
+            price: 지정가격
+            exchange: 해외 거래소 코드 (NASD, NYSE, AMEX)
+
+        Returns:
+            주문 결과 딕셔너리
+        """
+        if market.upper() == "KR":
+            return self._buy_kr_limit_order(code, quantity, int(price))
+        elif market.upper() == "US":
+            return self._buy_us_limit_order(code, quantity, price, exchange)
+        else:
+            raise ValueError(f"Unsupported market: {market}")
+
+    def _buy_kr_limit_order(self, code: str, quantity: int, price: int) -> dict:
+        """국내주식 지정가 매수"""
+        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
+        tr_id = "TTTC0802U"  # 실전투자 매수
+
+        headers = self._get_auth_headers(tr_id)
+        body = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "PDNO": code,
+            "ORD_DVSN": "00",  # 지정가
+            "ORD_QTY": str(quantity),
+            "ORD_UNPR": str(price),
+        }
+
+        print(f"[KR] Limit buy order: {code} x {quantity} @ {price:,}원")
+        print("Order request prepared (actual POST is commented out for safety)")
+
+        # ================================================
+        # 안전을 위해 실제 주문 요청은 주석 처리
+        # 실제 사용 시 아래 주석을 해제하세요
+        # ================================================
+        # try:
+        #     response = requests.post(url, headers=headers, json=body, timeout=10)
+        #     response.raise_for_status()
+        #     data = response.json()
+        #
+        #     if data.get("rt_cd") != "0":
+        #         raise ValueError(f"Order failed: {data.get('msg1')}")
+        #
+        #     return {
+        #         "success": True,
+        #         "order_no": data.get("output", {}).get("ODNO"),
+        #         "raw": data,
+        #     }
+        # except requests.RequestException as e:
+        #     print(f"KR order request failed: {e}")
+        #     raise
+
+        return {
+            "success": False,
+            "message": "Order not executed (commented out for safety)",
+            "request_body": body,
+        }
+
+    def _buy_us_limit_order(self, code: str, quantity: int, price: float, exchange: str = "NASD") -> dict:
+        """해외주식(미국) 지정가 매수"""
+        url = f"{self.BASE_URL}/uapi/overseas-stock/v1/trading/order"
+        tr_id = "TTTT1002U"  # 실전투자 해외매수
+
+        headers = self._get_auth_headers(tr_id)
+        body = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "OVRS_EXCG_CD": exchange,
+            "PDNO": code,
+            "ORD_QTY": str(quantity),
+            "OVRS_ORD_UNPR": str(price),
+            "ORD_SVR_DVSN_CD": "0",
+            "ORD_DVSN": "00",  # 지정가
+        }
+
+        print(f"[US] Limit buy order: {code} x {quantity} @ ${price:.2f} ({exchange})")
+        print("Order request prepared (actual POST is commented out for safety)")
+
+        # ================================================
+        # 안전을 위해 실제 주문 요청은 주석 처리
+        # 실제 사용 시 아래 주석을 해제하세요
+        # ================================================
+        # try:
+        #     response = requests.post(url, headers=headers, json=body, timeout=10)
+        #     response.raise_for_status()
+        #     data = response.json()
+        #
+        #     if data.get("rt_cd") != "0":
+        #         raise ValueError(f"Order failed: {data.get('msg1')}")
+        #
+        #     return {
+        #         "success": True,
+        #         "order_no": data.get("output", {}).get("ODNO"),
+        #         "raw": data,
+        #     }
+        # except requests.RequestException as e:
+        #     print(f"US order request failed: {e}")
+        #     raise
+
+        return {
+            "success": False,
+            "message": "Order not executed (commented out for safety)",
+            "request_body": body,
+        }
+
 
 if __name__ == "__main__":
     # 테스트 실행
@@ -442,6 +555,11 @@ if __name__ == "__main__":
         # 4. 시장가 매수 테스트 (실제 주문은 실행되지 않음)
         print("\n[4] Testing market buy order (not executed)...")
         api.buy_market_order("KR", "005930", 1)
+
+        # 5. 지정가 매수 테스트 (실제 주문은 실행되지 않음)
+        print("\n[5] Testing limit buy order (not executed)...")
+        api.buy_limit_order("KR", "005930", 1, 55000)
+        api.buy_limit_order("US", "VRT", 1, 90.00, exchange="NYSE")
 
         print("\n" + "=" * 50)
         print("Test completed successfully!")
