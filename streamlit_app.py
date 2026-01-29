@@ -120,17 +120,17 @@ class KisOverseas:
 
     def get_balance(self, exchange: str = "NASD") -> dict:
         """해외주식 잔고 조회"""
-        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-present-balance"
-        tr_id = "CTRP6504R"
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+        tr_id = "TTTS3012R"  # 해외주식 잔고조회
 
         headers = self.auth.get_auth_headers(tr_id)
         params = {
             "CANO": self.auth.account_number,
             "ACNT_PRDT_CD": self.auth.account_product_code,
-            "WCRC_FRCR_DVSN_CD": "02",
-            "NATN_CD": "840",
-            "TR_MKET_CD": "00",
-            "INQR_DVSN_CD": "00",
+            "OVRS_EXCG_CD": exchange,
+            "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
         }
 
         response = requests.get(url, headers=headers, params=params, timeout=10)
@@ -140,10 +140,20 @@ class KisOverseas:
         if data.get("rt_cd") != "0":
             raise ValueError(f"API error: {data.get('msg1')}")
 
-        output2 = data.get("output2", {})
+        # output2가 리스트인 경우 처리
+        output2 = data.get("output2", [])
+        if isinstance(output2, list) and len(output2) > 0:
+            output2 = output2[0]
+        elif isinstance(output2, list):
+            output2 = {}
+
+        # 예수금 정보
+        frcr_pchs_amt = float(output2.get("frcr_pchs_amt1", 0) or 0)  # 외화매입금액
+        ovrs_tot_pfls = float(output2.get("ovrs_tot_pfls", 0) or 0)  # 해외총손익
+
         return {
-            "frcr_dncl_amt": float(output2.get("frcr_dncl_amt_2", 0) or 0),  # 외화예수금
-            "tot_asst_amt": float(output2.get("tot_asst_amt", 0) or 0),  # 총자산
+            "frcr_dncl_amt": frcr_pchs_amt,
+            "tot_profit": ovrs_tot_pfls,
             "raw": data,
         }
 
@@ -272,7 +282,8 @@ def main():
                 try:
                     with st.spinner("잔고 조회 중..."):
                         balance = st.session_state.overseas.get_balance()
-                    st.metric("외화 예수금 (USD)", f"${balance['frcr_dncl_amt']:,.2f}")
+                    st.metric("외화 매입금액", f"${balance['frcr_dncl_amt']:,.2f}")
+                    st.metric("해외 총손익", f"${balance['tot_profit']:,.2f}")
                 except Exception as e:
                     st.error(f"잔고 조회 실패: {e}")
 
