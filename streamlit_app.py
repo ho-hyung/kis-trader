@@ -16,6 +16,10 @@ TARGETS = [
     {"symbol": "SOUN", "exchange": "NAS", "name": "SoundHound AI"},
 ]
 
+# GitHub 저장소 정보
+GITHUB_REPO = "ho-hyung/kis-trader"
+GITHUB_WORKFLOW = "trade.yml"
+
 # ========================================
 # 환경변수 로드
 # ========================================
@@ -28,6 +32,64 @@ def get_secret(key: str, default: str = None) -> str:
     from dotenv import load_dotenv
     load_dotenv()
     return os.getenv(key, default)
+
+
+# ========================================
+# GitHub Workflow 제어
+# ========================================
+class GitHubWorkflow:
+    def __init__(self):
+        self.token = get_secret("GITHUB_TOKEN")
+        self.repo = GITHUB_REPO
+        self.workflow = GITHUB_WORKFLOW
+
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+
+    def get_workflow_status(self) -> dict:
+        """워크플로우 상태 조회"""
+        if not self.token:
+            return {"error": "GITHUB_TOKEN이 설정되지 않았습니다"}
+
+        url = f"https://api.github.com/repos/{self.repo}/actions/workflows/{self.workflow}"
+        try:
+            response = requests.get(url, headers=self._headers(), timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "state": data.get("state"),  # "active" or "disabled_manually"
+                    "name": data.get("name"),
+                }
+            return {"error": f"API 오류: {response.status_code}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def disable_workflow(self) -> bool:
+        """워크플로우 비활성화 (일시정지)"""
+        if not self.token:
+            return False
+
+        url = f"https://api.github.com/repos/{self.repo}/actions/workflows/{self.workflow}/disable"
+        try:
+            response = requests.put(url, headers=self._headers(), timeout=10)
+            return response.status_code == 204
+        except Exception:
+            return False
+
+    def enable_workflow(self) -> bool:
+        """워크플로우 활성화 (재개)"""
+        if not self.token:
+            return False
+
+        url = f"https://api.github.com/repos/{self.repo}/actions/workflows/{self.workflow}/enable"
+        try:
+            response = requests.put(url, headers=self._headers(), timeout=10)
+            return response.status_code == 204
+        except Exception:
+            return False
 
 
 # ========================================
@@ -376,7 +438,11 @@ def main():
     # ========================================
     st.subheader("⏰ 자동매매 스케줄")
 
-    col1, col2 = st.columns(2)
+    # 워크플로우 상태 확인 및 제어
+    gh = GitHubWorkflow()
+    workflow_status = gh.get_workflow_status()
+
+    col1, col2, col3 = st.columns([2, 2, 3])
 
     with col1:
         st.markdown("""
@@ -392,16 +458,42 @@ def main():
         **매매 전략**
         - 조건: 현재가 < 20일 이동평균
         - 주문: 지정가 (현재가 기준)
-        - 수량: 종목당 1주
+        - 손절: -5% 시 전량 매도
         """)
+
+    with col3:
+        st.markdown("**스케줄 제어**")
+
+        if "error" in workflow_status:
+            st.warning(f"상태 조회 불가: {workflow_status['error']}")
+            st.caption("GITHUB_TOKEN을 Secrets에 추가하세요")
+        else:
+            is_active = workflow_status.get("state") == "active"
+
+            if is_active:
+                st.success("✅ 자동매매 활성화됨")
+                if st.button("⏸️ 일시정지", use_container_width=True):
+                    if gh.disable_workflow():
+                        st.success("자동매매가 일시정지되었습니다")
+                        st.rerun()
+                    else:
+                        st.error("일시정지 실패")
+            else:
+                st.error("⏸️ 자동매매 일시정지됨")
+                if st.button("▶️ 재개", use_container_width=True):
+                    if gh.enable_workflow():
+                        st.success("자동매매가 재개되었습니다")
+                        st.rerun()
+                    else:
+                        st.error("재개 실패")
 
     # 현재 장 상태 (한국 시간 기준)
     hour = now_kst.hour
 
     if (hour >= 23) or (hour < 6):
-        st.success("🟢 미국 장 운영 중 - 자동매매 활성화")
+        st.info("🟢 미국 장 운영 시간")
     else:
-        st.warning("🔴 미국 장 마감 - 자동매매 대기 중")
+        st.info("🔴 미국 장 마감 시간")
 
     st.markdown("---")
     st.caption("GitHub Actions로 자동 실행 | Slack 알림 연동")
