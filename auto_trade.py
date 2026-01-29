@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 # 매매 대상 종목 리스트 (symbol, exchange, quantity)
 TARGETS = [
     {"symbol": "VRT", "exchange": "NYS", "quantity": 1},   # Vertiv (NYSE)
-    {"symbol": "SOUN", "exchange": "NAS", "quantity": 1},  # SoundHound AI (NASDAQ)
+    {"symbol": "SOUN", "exchange": "NAS", "quantity": 1, "max_quantity": 2},  # SoundHound AI (NASDAQ) - 잔고 내 최대 2주
 ]
 
 IS_REAL_TRADING = True  # 실제 주문 활성화
@@ -202,6 +202,25 @@ class KisOverseas:
                 })
         return holdings
 
+    def get_order_amount(self) -> float:
+        """주문가능금액(USD) 조회"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        headers = self.auth.get_auth_headers("TTTS3007R")
+        params = {
+            "CANO": self.auth.account_number,
+            "ACNT_PRDT_CD": self.auth.account_product_code,
+            "OVRS_EXCG_CD": "NASD",
+            "OVRS_ORD_UNPR": "1",
+            "ITEM_CD": "",
+        }
+
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        output = data.get("output", {})
+        return float(output.get("frcr_ord_psbl_amt1", 0) or 0)
+
     def sell_market_order(self, symbol: str, quantity: int, exchange: str = "NAS") -> dict:
         """시장가 매도 (손절매용)"""
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
@@ -348,8 +367,11 @@ def check_stop_loss(overseas: KisOverseas, slack: SlackBot) -> list:
 # ========================================
 # 단일 종목 매수 처리
 # ========================================
-def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: str, quantity: int):
-    """단일 종목에 대한 매수 로직 실행"""
+def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: str, quantity: int, max_quantity: int = None):
+    """단일 종목에 대한 매수 로직 실행
+
+    max_quantity가 설정된 경우, 잔고 내에서 최대 수량까지 매수
+    """
     print(f"\n{'='*40}")
     print(f"매수 체크: {symbol} ({exchange})")
     print('='*40)
@@ -375,15 +397,33 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
 
         # 4. 주문 실행
         if buy_signal:
-            print(f"[4] 매수 주문 실행...")
+            # 잔고 기반 수량 계산 (max_quantity가 설정된 경우)
+            final_quantity = quantity
+            if max_quantity and max_quantity > quantity:
+                print(f"[4] 잔고 기반 수량 계산...")
+                try:
+                    available_usd = overseas.get_order_amount()
+                    print(f"    주문가능금액: ${available_usd:.2f}")
+
+                    # 최대 몇 주 살 수 있는지 계산
+                    affordable_qty = int(available_usd / current_price)
+                    # max_quantity를 초과하지 않도록 제한
+                    final_quantity = min(max(affordable_qty, quantity), max_quantity)
+                    print(f"    계산: ${available_usd:.2f} / ${current_price:.2f} = {affordable_qty}주 가능")
+                    print(f"    최종 수량: {final_quantity}주 (최소 {quantity}, 최대 {max_quantity})")
+                except Exception as e:
+                    print(f"    잔고 조회 실패, 기본 수량 사용: {e}")
+                    final_quantity = quantity
+
+            print(f"[5] 매수 주문 실행... ({final_quantity}주)")
             try:
-                result = overseas.buy_limit_order(symbol, quantity, current_price, exchange)
+                result = overseas.buy_limit_order(symbol, final_quantity, current_price, exchange)
 
                 if result["success"]:
-                    msg = f"✅ [{result['mode']}] {symbol} {quantity}주 매수!\n가격: ${current_price:.2f}\n조건: 현재가 < 20SMA"
+                    msg = f"✅ [{result['mode']}] {symbol} {final_quantity}주 매수!\n가격: ${current_price:.2f}\n조건: 현재가 < 20SMA"
                     print(f"    {msg}")
                     slack.send(msg)
-                    return {"symbol": symbol, "action": "BUY", "price": current_price}
+                    return {"symbol": symbol, "action": "BUY", "price": current_price, "quantity": final_quantity}
                 else:
                     msg = f"❌ {symbol} 매수 실패"
                     print(f"    {msg}")
@@ -446,6 +486,7 @@ def main():
                 symbol=target["symbol"],
                 exchange=target["exchange"],
                 quantity=target["quantity"],
+                max_quantity=target.get("max_quantity"),
             )
             buy_results.append(result)
 
@@ -465,7 +506,8 @@ def main():
         # 매수 결과
         for r in buy_results:
             if r["action"] == "BUY":
-                line = f"✅ {r['symbol']}: 매수 @ ${r['price']:.2f}"
+                qty = r.get("quantity", 1)
+                line = f"✅ {r['symbol']}: {qty}주 매수 @ ${r['price']:.2f}"
             elif r["action"] == "SKIP":
                 line = f"⏸️ {r['symbol']}: 패스 (${r['price']:.2f} > SMA ${r['sma']:.2f})"
             elif r["action"] == "NO_BALANCE":
