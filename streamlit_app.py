@@ -118,19 +118,18 @@ class KisOverseas:
             "change_rate": float(output.get("rate", 0) or 0),
         }
 
-    def get_balance(self, exchange: str = "NASD") -> dict:
-        """해외주식 잔고 조회"""
-        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
-        tr_id = "TTTS3012R"  # 해외주식 잔고조회
+    def get_balance(self, exchange: str = "NYSE") -> dict:
+        """해외주식 주문가능금액 조회"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        tr_id = "TTTS3007R"
 
         headers = self.auth.get_auth_headers(tr_id)
         params = {
             "CANO": self.auth.account_number,
             "ACNT_PRDT_CD": self.auth.account_product_code,
             "OVRS_EXCG_CD": exchange,
-            "TR_CRCY_CD": "USD",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": "",
+            "OVRS_ORD_UNPR": "10",
+            "ITEM_CD": "F",
         }
 
         response = requests.get(url, headers=headers, params=params, timeout=10)
@@ -140,20 +139,19 @@ class KisOverseas:
         if data.get("rt_cd") != "0":
             raise ValueError(f"API error: {data.get('msg1')}")
 
-        # output2가 리스트인 경우 처리
-        output2 = data.get("output2", [])
-        if isinstance(output2, list) and len(output2) > 0:
-            output2 = output2[0]
-        elif isinstance(output2, list):
-            output2 = {}
+        output = data.get("output", {})
 
-        # 예수금 정보
-        frcr_pchs_amt = float(output2.get("frcr_pchs_amt1", 0) or 0)  # 외화매입금액
-        ovrs_tot_pfls = float(output2.get("ovrs_tot_pfls", 0) or 0)  # 해외총손익
+        # 주문가능금액
+        frcr_ord_psbl_amt = float(output.get("frcr_ord_psbl_amt1", 0) or 0)  # 외화 주문가능금액
+        exrt = float(output.get("exrt", 0) or 0)  # 환율
+        max_qty = int(output.get("ovrs_max_ord_psbl_qty", 0) or 0)  # 최대 주문가능수량
+        krw_amt = frcr_ord_psbl_amt * exrt  # 원화 환산
 
         return {
-            "frcr_dncl_amt": frcr_pchs_amt,
-            "tot_profit": ovrs_tot_pfls,
+            "usd_amount": frcr_ord_psbl_amt,
+            "krw_amount": krw_amt,
+            "exchange_rate": exrt,
+            "max_qty": max_qty,
             "raw": data,
         }
 
@@ -282,8 +280,10 @@ def main():
                 try:
                     with st.spinner("잔고 조회 중..."):
                         balance = st.session_state.overseas.get_balance()
-                    st.metric("외화 매입금액", f"${balance['frcr_dncl_amt']:,.2f}")
-                    st.metric("해외 총손익", f"${balance['tot_profit']:,.2f}")
+                    st.metric("주문가능 (USD)", f"${balance['usd_amount']:.2f}")
+                    st.metric("주문가능 (KRW)", f"₩{balance['krw_amount']:,.0f}")
+                    st.metric("환율", f"{balance['exchange_rate']:,.2f}")
+                    st.caption(f"최대 주문가능: {balance['max_qty']}주")
                 except Exception as e:
                     st.error(f"잔고 조회 실패: {e}")
 
