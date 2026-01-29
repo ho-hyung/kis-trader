@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 SYMBOL = "VRT"
 EXCHANGE = "NYS"
 QUANTITY = 1
-IS_REAL_TRADING = False  # True로 변경 시 실제 주문
+IS_REAL_TRADING = True  # 실제 주문 활성화
 
 # ========================================
 # 환경변수 로드 (로컬 or GitHub Actions)
