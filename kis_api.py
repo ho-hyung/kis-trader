@@ -97,6 +97,29 @@ class KisApi:
         else:
             raise ValueError(f"Unsupported market: {market}. Use 'KR' or 'US'.")
 
+    def _get_kr_stock_name(self, code: str) -> str:
+        """국내주식 종목명 조회"""
+        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/search-stock-info"
+        tr_id = "CTPF1002R"
+
+        headers = self._get_auth_headers(tr_id)
+        params = {
+            "PRDT_TYPE_CD": "300",
+            "PDNO": code,
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("rt_cd") == "0":
+                return data.get("output", {}).get("prdt_abrv_name", code)
+        except Exception:
+            pass
+
+        return code
+
     def _get_kr_current_price(self, code: str) -> dict:
         """국내주식 현재가 조회"""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
@@ -118,10 +141,12 @@ class KisApi:
                 raise ValueError(f"API error: {data.get('msg1')}")
 
             output = data.get("output", {})
+            stock_name = self._get_kr_stock_name(code)
+
             return {
                 "market": "KR",
                 "code": code,
-                "name": output.get("stck_prpr", "N/A"),
+                "name": stock_name,
                 "current_price": int(output.get("stck_prpr", 0)),
                 "change_rate": float(output.get("prdy_ctrt", 0)),
                 "volume": int(output.get("acml_vol", 0)),
@@ -445,34 +470,23 @@ class KisApi:
         }
 
         print(f"[KR] Limit buy order: {code} x {quantity} @ {price:,}원")
-        print("Order request prepared (actual POST is commented out for safety)")
 
-        # ================================================
-        # 안전을 위해 실제 주문 요청은 주석 처리
-        # 실제 사용 시 아래 주석을 해제하세요
-        # ================================================
-        # try:
-        #     response = requests.post(url, headers=headers, json=body, timeout=10)
-        #     response.raise_for_status()
-        #     data = response.json()
-        #
-        #     if data.get("rt_cd") != "0":
-        #         raise ValueError(f"Order failed: {data.get('msg1')}")
-        #
-        #     return {
-        #         "success": True,
-        #         "order_no": data.get("output", {}).get("ODNO"),
-        #         "raw": data,
-        #     }
-        # except requests.RequestException as e:
-        #     print(f"KR order request failed: {e}")
-        #     raise
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            data = response.json()
 
-        return {
-            "success": False,
-            "message": "Order not executed (commented out for safety)",
-            "request_body": body,
-        }
+            if data.get("rt_cd") != "0":
+                raise ValueError(f"Order failed: {data.get('msg1')}")
+
+            return {
+                "success": True,
+                "order_no": data.get("output", {}).get("ODNO"),
+                "raw": data,
+            }
+        except requests.RequestException as e:
+            print(f"KR order request failed: {e}")
+            raise
 
     def _buy_us_limit_order(self, code: str, quantity: int, price: float, exchange: str = "NASD") -> dict:
         """해외주식(미국) 지정가 매수"""
@@ -523,10 +537,16 @@ class KisApi:
 
 
 if __name__ == "__main__":
+    from slack_bot import SlackBot
+
     # 테스트 실행
     print("=" * 50)
     print("KIS API Test")
     print("=" * 50)
+
+    # SlackBot 초기화
+    slack = SlackBot()
+    slack.send("🚀 슬랙 알림 시스템 가동! (Slack Bot Connected)")
 
     try:
         # API 클라이언트 초기화
@@ -552,14 +572,9 @@ if __name__ == "__main__":
         print(f"  Change Rate: {us_price['change_rate']}%")
         print(f"  Volume: {us_price['volume']:,}")
 
-        # 4. 시장가 매수 테스트 (실제 주문은 실행되지 않음)
-        print("\n[4] Testing market buy order (not executed)...")
-        api.buy_market_order("KR", "005930", 1)
-
-        # 5. 지정가 매수 테스트 (실제 주문은 실행되지 않음)
-        print("\n[5] Testing limit buy order (not executed)...")
-        api.buy_limit_order("KR", "005930", 1, 55000)
-        api.buy_limit_order("US", "VRT", 1, 90.00, exchange="NYSE")
+        # 4. 슬랙으로 현재가 알림 전송
+        print("\n[4] Sending price alert to Slack...")
+        slack.send_price_alert(kr_price, us_price)
 
         print("\n" + "=" * 50)
         print("Test completed successfully!")
@@ -567,5 +582,7 @@ if __name__ == "__main__":
 
     except ValueError as e:
         print(f"\nConfiguration error: {e}")
+        slack.send(f"❌ 설정 오류: {e}")
     except Exception as e:
         print(f"\nError: {e}")
+        slack.send(f"❌ 오류 발생: {e}")
