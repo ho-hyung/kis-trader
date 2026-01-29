@@ -1003,6 +1003,152 @@ class KisApi:
             print(f"US pending orders request failed: {e}")
             raise
 
+    # ========================================
+    # 체결 내역 조회
+    # ========================================
+
+    def get_executed_orders(self, market: str = "KR", exchange: str = "NASD") -> dict:
+        """
+        체결 내역 조회 (당일)
+
+        Args:
+            market: "KR" (국내) 또는 "US" (미국)
+            exchange: 해외 거래소 코드 (NASD, NYSE, AMEX)
+
+        Returns:
+            체결 내역 목록
+        """
+        if market.upper() == "KR":
+            return self._get_kr_executed_orders()
+        elif market.upper() == "US":
+            return self._get_us_executed_orders(exchange)
+        else:
+            raise ValueError(f"Unsupported market: {market}")
+
+    def _get_kr_executed_orders(self) -> dict:
+        """국내주식 체결 내역 조회"""
+        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        tr_id = "TTTC8001R"  # 실전투자 체결내역 조회
+
+        headers = self._get_auth_headers(tr_id)
+        params = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "INQR_STRT_DT": "",  # 빈값이면 당일
+            "INQR_END_DT": "",
+            "SLL_BUY_DVSN_CD": "00",  # 전체
+            "INQR_DVSN": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "01",  # 체결만
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if data.get("rt_cd") != "0":
+                raise ValueError(f"API error: {data.get('msg1')}")
+
+            orders = []
+            for item in data.get("output1", []):
+                executed_qty = int(item.get("tot_ccld_qty", 0))
+                if executed_qty > 0:
+                    orders.append({
+                        "order_no": item.get("odno"),
+                        "code": item.get("pdno"),
+                        "name": item.get("prdt_name"),
+                        "order_type": "buy" if item.get("sll_buy_dvsn_cd") == "02" else "sell",
+                        "order_qty": int(item.get("ord_qty", 0)),
+                        "executed_qty": executed_qty,
+                        "executed_price": int(item.get("avg_prvs", 0)),
+                        "order_time": item.get("ord_tmd"),
+                    })
+
+            return {
+                "market": "KR",
+                "orders": orders,
+                "count": len(orders),
+                "raw": data,
+            }
+
+        except requests.RequestException as e:
+            print(f"KR executed orders request failed: {e}")
+            raise
+
+    def _get_us_executed_orders(self, exchange: str = "NASD") -> dict:
+        """해외주식(미국) 체결 내역 조회"""
+        from datetime import datetime
+
+        today = datetime.now().strftime("%Y%m%d")
+
+        url = f"{self.BASE_URL}/uapi/overseas-stock/v1/trading/inquire-ccnl"
+        tr_id = "TTTS3035R"  # 실전투자 해외 체결내역 조회
+
+        headers = self._get_auth_headers(tr_id)
+        params = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "PDNO": "%",
+            "ORD_STRT_DT": today,
+            "ORD_END_DT": today,
+            "CCLD_NCCS_DVSN": "01",  # 체결만
+            "OVRS_EXCG_CD": exchange,
+            "SORT_SQN": "DS",
+            "CTX_AREA_NK200": "",
+            "CTX_AREA_FK200": "",
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if data.get("rt_cd") != "0":
+                print(f"[US] Executed orders API warning: {data.get('msg1')}")
+                return {
+                    "market": "US",
+                    "exchange": exchange,
+                    "orders": [],
+                    "count": 0,
+                    "raw": data,
+                }
+
+            orders = []
+            for item in data.get("output", []):
+                executed_qty = int(item.get("ft_ccld_qty", 0) or 0)
+                if executed_qty > 0:
+                    orders.append({
+                        "order_no": item.get("odno"),
+                        "code": item.get("pdno"),
+                        "name": item.get("prdt_name"),
+                        "order_type": "buy" if item.get("sll_buy_dvsn_cd") == "02" else "sell",
+                        "order_qty": int(item.get("ft_ord_qty", 0) or 0),
+                        "executed_qty": executed_qty,
+                        "executed_price": float(item.get("ft_ccld_unpr3", 0) or 0),
+                        "order_time": item.get("ord_tmd"),
+                    })
+
+            return {
+                "market": "US",
+                "exchange": exchange,
+                "orders": orders,
+                "count": len(orders),
+                "raw": data,
+            }
+
+        except requests.RequestException as e:
+            print(f"US executed orders request failed: {e}")
+            raise
+
 
 if __name__ == "__main__":
     from slack_bot import SlackBot
