@@ -20,6 +20,7 @@ TARGETS = [
 ]
 
 IS_REAL_TRADING = True  # 실제 주문 활성화
+STOP_LOSS_PERCENT = -5.0  # 손절매 기준 (-5%)
 
 # ========================================
 # 환경변수 로드 (로컬 or GitHub Actions)
@@ -171,6 +172,75 @@ class KisOverseas:
             "order_no": data.get("output", {}).get("ODNO"),
         }
 
+    def get_holdings(self) -> list:
+        """해외주식 보유 잔고 조회"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+        headers = self.auth.get_auth_headers("TTTS3012R")
+        params = {
+            "CANO": self.auth.account_number,
+            "ACNT_PRDT_CD": self.auth.account_product_code,
+            "OVRS_EXCG_CD": "NASD",
+            "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        holdings = []
+        for item in data.get("output1", []):
+            qty = int(item.get("ovrs_cblc_qty", 0) or 0)
+            if qty > 0:
+                holdings.append({
+                    "symbol": item.get("ovrs_pdno"),
+                    "quantity": qty,
+                    "avg_price": float(item.get("pchs_avg_pric", 0) or 0),
+                    "current_price": float(item.get("now_pric2", 0) or 0),
+                    "profit_rate": float(item.get("evlu_pfls_rt", 0) or 0),
+                })
+        return holdings
+
+    def sell_market_order(self, symbol: str, quantity: int, exchange: str = "NAS") -> dict:
+        """시장가 매도 (손절매용)"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
+        tr_id = "TTTT1006U"  # 실전투자 해외매도
+
+        exchange_map = {"NYS": "NYSE", "NAS": "NASD", "AMS": "AMEX"}
+        headers = self.auth.get_auth_headers(tr_id)
+
+        body = {
+            "CANO": self.auth.account_number,
+            "ACNT_PRDT_CD": self.auth.account_product_code,
+            "OVRS_EXCG_CD": exchange_map.get(exchange, "NASD"),
+            "PDNO": symbol,
+            "ORD_QTY": str(quantity),
+            "OVRS_ORD_UNPR": "0",  # 시장가
+            "ORD_SVR_DVSN_CD": "0",
+            "ORD_DVSN": "00",
+        }
+
+        if not IS_REAL_TRADING:
+            return {
+                "success": True,
+                "mode": "simulation",
+                "order_no": "VIRTUAL_SELL",
+            }
+
+        response = requests.post(url, headers=headers, json=body, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+        if data.get("rt_cd") != "0":
+            raise ValueError(f"Sell order failed: {data.get('msg1')}")
+
+        return {
+            "success": True,
+            "mode": "real",
+            "order_no": data.get("output", {}).get("ODNO"),
+        }
+
 
 class SlackBot:
     def __init__(self):
@@ -213,12 +283,75 @@ def should_buy(current_price: float, sma_20: float) -> bool:
 
 
 # ========================================
-# 단일 종목 매매 처리
+# 손절매 체크
 # ========================================
-def process_symbol(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: str, quantity: int):
-    """단일 종목에 대한 매매 로직 실행"""
+def check_stop_loss(overseas: KisOverseas, slack: SlackBot) -> list:
+    """보유 종목 손절매 체크"""
     print(f"\n{'='*40}")
-    print(f"종목: {symbol} ({exchange})")
+    print("손절매 체크")
+    print('='*40)
+
+    results = []
+
+    try:
+        holdings = overseas.get_holdings()
+
+        if not holdings:
+            print("보유 종목 없음")
+            return results
+
+        for holding in holdings:
+            symbol = holding["symbol"]
+            quantity = holding["quantity"]
+            avg_price = holding["avg_price"]
+            current_price = holding["current_price"]
+            profit_rate = holding["profit_rate"]
+
+            print(f"\n{symbol}: {quantity}주 | 평단가: ${avg_price:.2f} | 현재가: ${current_price:.2f} | 손익: {profit_rate:+.2f}%")
+
+            # 손절매 조건 확인 (-5% 이하)
+            if profit_rate <= STOP_LOSS_PERCENT:
+                print(f"  🚨 손절매 조건 충족! ({profit_rate:.2f}% <= {STOP_LOSS_PERCENT}%)")
+
+                # 거래소 코드 찾기
+                exchange = "NAS"  # 기본값
+                for target in TARGETS:
+                    if target["symbol"] == symbol:
+                        exchange = target["exchange"]
+                        break
+
+                # 시장가 전량 매도
+                try:
+                    result = overseas.sell_market_order(symbol, quantity, exchange)
+                    if result["success"]:
+                        msg = f"🚨 손절매 발동!\n{symbol} {profit_rate:.2f}% 하락\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+                        print(f"  {msg}")
+                        slack.send(msg)
+                        results.append({"symbol": symbol, "action": "STOP_LOSS", "profit_rate": profit_rate})
+                    else:
+                        print(f"  ❌ 손절매 주문 실패")
+                        results.append({"symbol": symbol, "action": "STOP_LOSS_FAILED"})
+                except Exception as e:
+                    print(f"  ❌ 손절매 주문 오류: {e}")
+                    slack.send(f"❌ {symbol} 손절매 오류: {e}")
+                    results.append({"symbol": symbol, "action": "STOP_LOSS_ERROR", "error": str(e)})
+            else:
+                print(f"  ✅ 손절 기준 미달 (현재 {profit_rate:+.2f}% > 기준 {STOP_LOSS_PERCENT}%)")
+
+    except Exception as e:
+        print(f"[ERROR] 손절매 체크 오류: {e}")
+        slack.send(f"❌ 손절매 체크 오류: {e}")
+
+    return results
+
+
+# ========================================
+# 단일 종목 매수 처리
+# ========================================
+def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: str, quantity: int):
+    """단일 종목에 대한 매수 로직 실행"""
+    print(f"\n{'='*40}")
+    print(f"매수 체크: {symbol} ({exchange})")
     print('='*40)
 
     try:
@@ -243,18 +376,28 @@ def process_symbol(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange
         # 4. 주문 실행
         if buy_signal:
             print(f"[4] 매수 주문 실행...")
-            result = overseas.buy_limit_order(symbol, quantity, current_price, exchange)
+            try:
+                result = overseas.buy_limit_order(symbol, quantity, current_price, exchange)
 
-            if result["success"]:
-                msg = f"✅ [{result['mode']}] {symbol} {quantity}주 매수!\n가격: ${current_price:.2f}\n조건: 현재가 < 20SMA"
-                print(f"    {msg}")
-                slack.send(msg)
-                return {"symbol": symbol, "action": "BUY", "price": current_price}
-            else:
-                msg = f"❌ {symbol} 매수 실패"
-                print(f"    {msg}")
-                slack.send(msg)
-                return {"symbol": symbol, "action": "FAILED", "price": current_price}
+                if result["success"]:
+                    msg = f"✅ [{result['mode']}] {symbol} {quantity}주 매수!\n가격: ${current_price:.2f}\n조건: 현재가 < 20SMA"
+                    print(f"    {msg}")
+                    slack.send(msg)
+                    return {"symbol": symbol, "action": "BUY", "price": current_price}
+                else:
+                    msg = f"❌ {symbol} 매수 실패"
+                    print(f"    {msg}")
+                    slack.send(msg)
+                    return {"symbol": symbol, "action": "FAILED", "price": current_price}
+
+            except ValueError as e:
+                error_msg = str(e)
+                # 잔고 부족 체크
+                if "잔고" in error_msg or "금액" in error_msg or "부족" in error_msg:
+                    print(f"    💸 잔고 부족으로 패스: {error_msg}")
+                    return {"symbol": symbol, "action": "NO_BALANCE", "price": current_price}
+                else:
+                    raise
         else:
             print(f"[4] 매수 조건 미충족 - 패스")
             return {"symbol": symbol, "action": "SKIP", "price": current_price, "sma": sma_20}
@@ -277,10 +420,11 @@ def main():
     print(f"자동 매매 실행 ({mode_str})")
     print(f"시간: {now.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"대상: {symbols_str}")
+    print(f"손절 기준: {STOP_LOSS_PERCENT}%")
     print("=" * 50)
 
     slack = SlackBot()
-    slack.send(f"🤖 자동매매 시작 ({mode_str})\n대상: {symbols_str}")
+    slack.send(f"🤖 자동매매 시작 ({mode_str})\n대상: {symbols_str}\n손절: {STOP_LOSS_PERCENT}%")
 
     try:
         # 1. 인증
@@ -290,35 +434,50 @@ def main():
         overseas = KisOverseas(auth)
         print("[인증] 완료")
 
-        # 2. 각 종목 처리
-        results = []
+        # 2. 손절매 체크 (먼저 실행)
+        stop_loss_results = check_stop_loss(overseas, slack)
+
+        # 3. 각 종목 매수 체크
+        buy_results = []
         for target in TARGETS:
-            result = process_symbol(
+            result = process_buy(
                 overseas=overseas,
                 slack=slack,
                 symbol=target["symbol"],
                 exchange=target["exchange"],
                 quantity=target["quantity"],
             )
-            results.append(result)
+            buy_results.append(result)
 
-        # 3. 결과 요약
+        # 4. 결과 요약
         print("\n" + "=" * 50)
         print("실행 결과 요약")
         print("=" * 50)
 
         summary_lines = []
-        for r in results:
+
+        # 손절매 결과
+        for r in stop_loss_results:
+            if r["action"] == "STOP_LOSS":
+                line = f"🚨 {r['symbol']}: 손절매 ({r['profit_rate']:.2f}%)"
+                summary_lines.append(line)
+
+        # 매수 결과
+        for r in buy_results:
             if r["action"] == "BUY":
                 line = f"✅ {r['symbol']}: 매수 @ ${r['price']:.2f}"
             elif r["action"] == "SKIP":
                 line = f"⏸️ {r['symbol']}: 패스 (${r['price']:.2f} > SMA ${r['sma']:.2f})"
+            elif r["action"] == "NO_BALANCE":
+                line = f"💸 {r['symbol']}: 잔고 부족으로 패스"
             elif r["action"] == "ERROR":
                 line = f"❌ {r['symbol']}: 오류"
             else:
                 line = f"❌ {r['symbol']}: 실패"
-            print(line)
             summary_lines.append(line)
+
+        for line in summary_lines:
+            print(line)
 
         # 슬랙 요약 전송
         slack.send("📊 자동매매 완료\n" + "\n".join(summary_lines))
