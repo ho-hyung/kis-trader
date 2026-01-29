@@ -1,25 +1,30 @@
 """
-미국주식 자동매매 대시보드
+자동매매 모니터링 대시보드
 실행: streamlit run streamlit_app.py
 """
 
 import os
-import streamlit as st
 import requests
+import streamlit as st
+from datetime import datetime
 
 # ========================================
-# 하이브리드 시크릿 관리 (Cloud + Local)
+# 자동매매 대상 종목 (auto_trade.py와 동일)
+# ========================================
+TARGETS = [
+    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings"},
+    {"symbol": "TSLL", "exchange": "NAS", "name": "Tesla 2x Long ETF"},
+]
+
+# ========================================
+# 환경변수 로드
 # ========================================
 def get_secret(key: str, default: str = None) -> str:
-    """Streamlit Cloud 또는 로컬 환경에서 시크릿 가져오기"""
-    # 1. Streamlit Cloud secrets 확인
     try:
         if key in st.secrets:
             return st.secrets[key]
     except Exception:
         pass
-
-    # 2. 로컬 환경변수 확인 (.env)
     from dotenv import load_dotenv
     load_dotenv()
     return os.getenv(key, default)
@@ -29,8 +34,6 @@ def get_secret(key: str, default: str = None) -> str:
 # KIS API 클래스
 # ========================================
 class KisAuth:
-    """한국투자증권 인증 클래스"""
-
     BASE_URL = "https://openapi.koreainvestment.com:9443"
 
     def __init__(self):
@@ -38,46 +41,22 @@ class KisAuth:
         self.app_secret = get_secret("KIS_APP_SECRET")
         self.account_number = get_secret("KIS_ACCOUNT_NUMBER")
         self.account_product_code = get_secret("KIS_ACCOUNT_PRODUCT_CODE", "01")
-
-        self._validate_credentials()
         self.access_token = None
-
-    def _validate_credentials(self):
-        missing = []
-        if not self.app_key:
-            missing.append("KIS_APP_KEY")
-        if not self.app_secret:
-            missing.append("KIS_APP_SECRET")
-        if not self.account_number:
-            missing.append("KIS_ACCOUNT_NUMBER")
-
-        if missing:
-            raise ValueError(f"Missing secrets: {', '.join(missing)}")
 
     def get_access_token(self) -> str:
         url = f"{self.BASE_URL}/oauth2/tokenP"
-        headers = {"Content-Type": "application/json"}
         body = {
             "grant_type": "client_credentials",
             "appkey": self.app_key,
             "appsecret": self.app_secret,
         }
-
-        response = requests.post(url, headers=headers, json=body, timeout=10)
+        response = requests.post(url, json=body, timeout=10)
         response.raise_for_status()
-
         data = response.json()
         self.access_token = data.get("access_token")
-
-        if not self.access_token:
-            raise ValueError(f"Token not found: {data}")
-
         return self.access_token
 
     def get_auth_headers(self, tr_id: str) -> dict:
-        if not self.access_token:
-            raise ValueError("Call get_access_token() first")
-
         return {
             "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {self.access_token}",
@@ -88,135 +67,131 @@ class KisAuth:
 
 
 class KisOverseas:
-    """해외주식(미국) 거래 클래스"""
-
     def __init__(self, auth: KisAuth):
         self.auth = auth
         self.base_url = auth.BASE_URL
 
     def get_current_price(self, symbol: str, exchange: str = "NYS") -> dict:
         url = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
-        tr_id = "HHDFS00000300"
-
-        headers = self.auth.get_auth_headers(tr_id)
+        headers = self.auth.get_auth_headers("HHDFS00000300")
         params = {"AUTH": "", "EXCD": exchange, "SYMB": symbol}
-
         response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
-
         data = response.json()
         if data.get("rt_cd") != "0":
-            raise ValueError(f"API error: {data.get('msg1')}")
-
+            return None
         output = data.get("output", {})
-        last_price = output.get("last", "")
-
         return {
-            "symbol": symbol,
-            "exchange": exchange,
-            "price": float(last_price) if last_price else 0.0,
+            "price": float(output.get("last", 0) or 0),
+            "change": float(output.get("diff", 0) or 0),
             "change_rate": float(output.get("rate", 0) or 0),
+            "high": float(output.get("high", 0) or 0),
+            "low": float(output.get("low", 0) or 0),
+            "volume": int(output.get("tvol", 0) or 0),
         }
 
-    def get_balance(self, exchange: str = "NYSE") -> dict:
-        """해외주식 주문가능금액 조회"""
-        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
-        tr_id = "TTTS3007R"
+    def get_daily_prices(self, symbol: str, exchange: str = "NYS", days: int = 20) -> list:
+        url = f"{self.base_url}/uapi/overseas-price/v1/quotations/dailyprice"
+        headers = self.auth.get_auth_headers("HHDFS76240000")
+        params = {
+            "AUTH": "", "EXCD": exchange, "SYMB": symbol,
+            "GUBN": "0", "BYMD": "", "MODP": "1",
+        }
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("rt_cd") != "0":
+            return []
+        prices = []
+        for item in data.get("output2", [])[:days]:
+            close = item.get("clos")
+            if close:
+                prices.append(float(close))
+        return prices
 
-        headers = self.auth.get_auth_headers(tr_id)
+    def get_balance(self) -> dict:
+        """해외주식 보유 잔고 조회"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+        headers = self.auth.get_auth_headers("TTTS3012R")
         params = {
             "CANO": self.auth.account_number,
             "ACNT_PRDT_CD": self.auth.account_product_code,
-            "OVRS_EXCG_CD": exchange,
+            "OVRS_EXCG_CD": "NASD",
+            "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        holdings = []
+        for item in data.get("output1", []):
+            qty = int(item.get("ovrs_cblc_qty", 0) or 0)
+            if qty > 0:
+                holdings.append({
+                    "symbol": item.get("ovrs_pdno"),
+                    "name": item.get("ovrs_item_name"),
+                    "quantity": qty,
+                    "avg_price": float(item.get("pchs_avg_pric", 0) or 0),
+                    "current_price": float(item.get("now_pric2", 0) or 0),
+                    "profit_rate": float(item.get("evlu_pfls_rt", 0) or 0),
+                    "profit_amt": float(item.get("frcr_evlu_pfls_amt", 0) or 0),
+                })
+        return {"holdings": holdings}
+
+    def get_order_amount(self) -> dict:
+        """주문가능금액 조회"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        headers = self.auth.get_auth_headers("TTTS3007R")
+        params = {
+            "CANO": self.auth.account_number,
+            "ACNT_PRDT_CD": self.auth.account_product_code,
+            "OVRS_EXCG_CD": "NYSE",
             "OVRS_ORD_UNPR": "10",
             "ITEM_CD": "F",
         }
-
         response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
-
         data = response.json()
-        if data.get("rt_cd") != "0":
-            raise ValueError(f"API error: {data.get('msg1')}")
-
         output = data.get("output", {})
+        usd = float(output.get("frcr_ord_psbl_amt1", 0) or 0)
+        exrt = float(output.get("exrt", 0) or 0)
+        return {"usd": usd, "krw": usd * exrt, "exchange_rate": exrt}
 
-        # 주문가능금액
-        frcr_ord_psbl_amt = float(output.get("frcr_ord_psbl_amt1", 0) or 0)  # 외화 주문가능금액
-        exrt = float(output.get("exrt", 0) or 0)  # 환율
-        max_qty = int(output.get("ovrs_max_ord_psbl_qty", 0) or 0)  # 최대 주문가능수량
-        krw_amt = frcr_ord_psbl_amt * exrt  # 원화 환산
-
-        return {
-            "usd_amount": frcr_ord_psbl_amt,
-            "krw_amount": krw_amt,
-            "exchange_rate": exrt,
-            "max_qty": max_qty,
-            "raw": data,
-        }
-
-    def buy_limit_order(self, symbol: str, quantity: int, price: float, exchange: str = "NYS", is_real: bool = False) -> dict:
-        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
-        tr_id = "JTTT1002U"
-
-        exchange_map = {"NYS": "NYSE", "NAS": "NASD", "AMS": "AMEX"}
-        ovrs_excg_cd = exchange_map.get(exchange, "NYSE")
-
-        headers = self.auth.get_auth_headers(tr_id)
-        body = {
+    def get_pending_orders(self) -> list:
+        """미체결 주문 조회"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
+        headers = self.auth.get_auth_headers("TTTS3018R")
+        params = {
             "CANO": self.auth.account_number,
             "ACNT_PRDT_CD": self.auth.account_product_code,
-            "OVRS_EXCG_CD": ovrs_excg_cd,
-            "PDNO": symbol,
-            "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": str(price),
-            "ORD_SVR_DVSN_CD": "0",
-            "ORD_DVSN": "00",
+            "OVRS_EXCG_CD": "NASD",
+            "SORT_SQN": "DS",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
         }
-
-        if not is_real:
-            return {
-                "success": True,
-                "mode": "simulation",
-                "order_no": "VIRTUAL_ORDER",
-                "message": "가상 주문이 전송되었습니다.",
-            }
-
-        response = requests.post(url, headers=headers, json=body, timeout=10)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
-        if data.get("rt_cd") != "0":
-            raise ValueError(f"Order failed: {data.get('msg1')}")
+        orders = []
+        for item in data.get("output", []):
+            orders.append({
+                "order_no": item.get("odno"),
+                "symbol": item.get("pdno"),
+                "type": "매수" if item.get("sll_buy_dvsn_cd") == "02" else "매도",
+                "quantity": int(item.get("ft_ord_qty", 0) or 0),
+                "price": float(item.get("ft_ord_unpr3", 0) or 0),
+                "time": item.get("ord_tmd"),
+            })
+        return orders
 
-        return {
-            "success": True,
-            "mode": "real",
-            "order_no": data.get("output", {}).get("ODNO"),
-        }
 
-
-class SlackBot:
-    """Slack 알림 클래스"""
-
-    def __init__(self):
-        self.webhook_url = get_secret("SLACK_WEBHOOK_URL")
-
-    def send(self, message: str) -> bool:
-        if not self.webhook_url:
-            return False
-
-        try:
-            response = requests.post(
-                self.webhook_url,
-                json={"text": message},
-                headers={"Content-Type": "application/json"},
-                timeout=10,
-            )
-            response.raise_for_status()
-            return True
-        except Exception:
-            return False
+def calculate_sma(prices: list, period: int = 20) -> float:
+    if len(prices) < period:
+        return 0
+    return sum(prices[:period]) / period
 
 
 # ========================================
@@ -224,184 +199,205 @@ class SlackBot:
 # ========================================
 def main():
     st.set_page_config(
-        page_title="My AI Trader",
-        page_icon="🚀",
+        page_title="자동매매 모니터링",
+        page_icon="🤖",
         layout="wide",
     )
 
-    # 세션 상태 초기화
-    if "auth" not in st.session_state:
-        st.session_state.auth = None
-    if "overseas" not in st.session_state:
-        st.session_state.overseas = None
-    if "current_price" not in st.session_state:
-        st.session_state.current_price = None
-    if "token_ready" not in st.session_state:
-        st.session_state.token_ready = False
+    st.title("🤖 자동매매 모니터링 대시보드")
+    st.caption(f"마지막 새로고침: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # ========================================
-    # 사이드바
-    # ========================================
-    with st.sidebar:
-        st.title("🚀 My AI Trader")
-        st.markdown("---")
+    # 새로고침 버튼
+    col1, col2, col3 = st.columns([1, 1, 8])
+    with col1:
+        if st.button("🔄 새로고침", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+    with col2:
+        auto_refresh = st.checkbox("자동 새로고침", value=False)
 
-        # 모드 선택
-        trading_mode = st.radio(
-            "거래 모드",
-            ["🟢 모의 투자 (Simulation)", "🔴 실전 투자 (Real)"],
-            index=0,
+    if auto_refresh:
+        st.markdown(
+            """
+            <meta http-equiv="refresh" content="60">
+            """,
+            unsafe_allow_html=True,
         )
-        is_real_trading = "실전" in trading_mode
+        st.info("60초마다 자동 새로고침됩니다.")
 
-        if is_real_trading:
-            st.warning("⚠️ 실전 투자 모드입니다!")
+    st.markdown("---")
 
-        st.markdown("---")
+    # API 연결
+    try:
+        auth = KisAuth()
+        auth.get_access_token()
+        overseas = KisOverseas(auth)
+    except Exception as e:
+        st.error(f"API 연결 실패: {e}")
+        return
 
-        # 토큰 발급
-        if st.button("🔑 API 연결", use_container_width=True):
+    # ========================================
+    # 1. 주문가능금액
+    # ========================================
+    st.subheader("💰 주문가능금액")
+    try:
+        amount = overseas.get_order_amount()
+        col1, col2, col3 = st.columns(3)
+        col1.metric("USD", f"${amount['usd']:.2f}")
+        col2.metric("KRW", f"₩{amount['krw']:,.0f}")
+        col3.metric("환율", f"{amount['exchange_rate']:,.2f}")
+    except Exception as e:
+        st.error(f"주문가능금액 조회 실패: {e}")
+
+    st.markdown("---")
+
+    # ========================================
+    # 2. 자동매매 대상 종목 현황
+    # ========================================
+    st.subheader("📊 자동매매 대상 종목")
+    st.caption("전략: 현재가 < 20일 이동평균 → 매수")
+
+    cols = st.columns(len(TARGETS))
+
+    for idx, target in enumerate(TARGETS):
+        with cols[idx]:
+            symbol = target["symbol"]
+            exchange = target["exchange"]
+            name = target["name"]
+
             try:
-                with st.spinner("토큰 발급 중..."):
-                    auth = KisAuth()
-                    auth.get_access_token()
-                    st.session_state.auth = auth
-                    st.session_state.overseas = KisOverseas(auth)
-                    st.session_state.token_ready = True
-                st.success("API 연결 성공!")
+                # 현재가 조회
+                price_info = overseas.get_current_price(symbol, exchange)
+                if not price_info:
+                    st.error(f"{symbol} 조회 실패")
+                    continue
+
+                current_price = price_info["price"]
+                change_rate = price_info["change_rate"]
+
+                # 20일 이평선
+                daily_prices = overseas.get_daily_prices(symbol, exchange, 20)
+                sma_20 = calculate_sma(daily_prices, 20)
+
+                # 매수 조건
+                buy_signal = current_price < sma_20 if sma_20 > 0 else False
+
+                # 카드 스타일 표시
+                if buy_signal:
+                    st.success(f"**{symbol}** - {name}")
+                    signal_text = "🟢 매수 조건 충족"
+                else:
+                    st.info(f"**{symbol}** - {name}")
+                    signal_text = "⏸️ 대기 중"
+
+                st.metric(
+                    label="현재가",
+                    value=f"${current_price:.2f}",
+                    delta=f"{change_rate:+.2f}%",
+                )
+
+                st.caption(f"20일 SMA: ${sma_20:.2f}")
+
+                # 진행 바 (현재가 vs 이평선)
+                if sma_20 > 0:
+                    ratio = current_price / sma_20
+                    st.progress(min(ratio / 1.5, 1.0))
+                    st.caption(f"이평선 대비: {(ratio - 1) * 100:+.1f}%")
+
+                st.markdown(f"**{signal_text}**")
+
             except Exception as e:
-                st.error(f"연결 실패: {e}")
+                st.error(f"{symbol} 오류: {e}")
 
-        # 잔고 조회
-        if st.button("💰 잔고 조회", use_container_width=True):
-            if not st.session_state.token_ready:
-                st.warning("먼저 API 연결을 해주세요.")
-            else:
-                try:
-                    with st.spinner("잔고 조회 중..."):
-                        balance = st.session_state.overseas.get_balance()
-                    st.metric("주문가능 (USD)", f"${balance['usd_amount']:.2f}")
-                    st.metric("주문가능 (KRW)", f"₩{balance['krw_amount']:,.0f}")
-                    st.metric("환율", f"{balance['exchange_rate']:,.2f}")
-                    st.caption(f"최대 주문가능: {balance['max_qty']}주")
-                except Exception as e:
-                    st.error(f"잔고 조회 실패: {e}")
-
-        st.markdown("---")
-        st.caption("Made with Streamlit")
+    st.markdown("---")
 
     # ========================================
-    # 메인 화면
+    # 3. 보유 종목 현황
     # ========================================
-    st.header("🇺🇸 미국 주식 트레이딩")
+    st.subheader("📈 보유 종목")
 
-    # Step 1: 종목 설정
-    st.subheader("Step 1. 종목 설정")
+    try:
+        balance = overseas.get_balance()
+        holdings = balance["holdings"]
+
+        if holdings:
+            for h in holdings:
+                col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
+
+                profit_color = "green" if h["profit_rate"] >= 0 else "red"
+
+                col1.markdown(f"**{h['symbol']}**<br><small>{h['name']}</small>", unsafe_allow_html=True)
+                col2.metric("수량", f"{h['quantity']}주")
+                col3.metric("평균단가", f"${h['avg_price']:.2f}")
+                col4.metric("현재가", f"${h['current_price']:.2f}")
+                col5.metric(
+                    "손익률",
+                    f"{h['profit_rate']:+.2f}%",
+                    delta=f"${h['profit_amt']:+.2f}",
+                )
+                st.markdown("---")
+        else:
+            st.info("보유 중인 해외주식이 없습니다.")
+
+    except Exception as e:
+        st.warning(f"잔고 조회 실패: {e}")
+
+    # ========================================
+    # 4. 미체결 주문
+    # ========================================
+    st.subheader("📋 미체결 주문")
+
+    try:
+        pending = overseas.get_pending_orders()
+        if pending:
+            for order in pending:
+                col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+                col1.write(f"**{order['symbol']}** ({order['type']})")
+                col2.write(f"{order['quantity']}주")
+                col3.write(f"${order['price']:.2f}")
+                col4.write(f"주문번호: {order['order_no']}")
+        else:
+            st.info("미체결 주문이 없습니다.")
+    except Exception as e:
+        st.warning(f"미체결 조회 실패: {e}")
+
+    st.markdown("---")
+
+    # ========================================
+    # 5. 자동매매 스케줄 정보
+    # ========================================
+    st.subheader("⏰ 자동매매 스케줄")
+
     col1, col2 = st.columns(2)
 
     with col1:
-        symbol = st.text_input("종목 티커", value="F", max_chars=10)
-        symbol = symbol.upper()
-
-    with col2:
-        exchange = st.selectbox("거래소", ["NYS", "NAS", "AMS"], index=0)
-
-    st.markdown("---")
-
-    # Step 2: 가격 확인
-    st.subheader("Step 2. 가격 확인")
-
-    if st.button("🔍 현재가 조회", use_container_width=True):
-        if not st.session_state.token_ready:
-            st.warning("먼저 사이드바에서 API 연결을 해주세요.")
-        else:
-            try:
-                with st.spinner(f"{symbol} 현재가 조회 중..."):
-                    price_info = st.session_state.overseas.get_current_price(symbol, exchange)
-                    st.session_state.current_price = price_info
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric(
-                        label=f"{symbol} 현재가",
-                        value=f"${price_info['price']:.2f}",
-                        delta=f"{price_info['change_rate']:+.2f}%",
-                    )
-                with col2:
-                    st.info(f"거래소: {exchange}")
-
-            except Exception as e:
-                st.error(f"조회 실패: {e}")
-
-    # 현재가 표시 (세션에 저장된 경우)
-    if st.session_state.current_price:
-        price_info = st.session_state.current_price
-        st.success(f"💵 {price_info['symbol']}: ${price_info['price']:.2f} ({price_info['change_rate']:+.2f}%)")
-
-    st.markdown("---")
-
-    # Step 3: 주문 실행
-    st.subheader("Step 3. 주문 실행")
-
-    quantity = st.number_input("주문 수량", min_value=1, max_value=100, value=1, step=1)
-
-    # 매수 버튼
-    if st.button("⚡ 매수 주문", type="primary", use_container_width=True):
-        if not st.session_state.token_ready:
-            st.warning("먼저 사이드바에서 API 연결을 해주세요.")
-        elif not st.session_state.current_price:
-            st.warning("먼저 현재가를 조회해주세요.")
-        else:
-            st.session_state.show_confirm = True
-
-    # 확인 다이얼로그
-    if st.session_state.get("show_confirm"):
-        price_info = st.session_state.current_price
-        mode_str = "🔴 실전" if is_real_trading else "🟢 모의"
-
-        st.warning(f"""
-        **진짜 매수하시겠습니까?**
-
-        - 모드: {mode_str}
-        - 종목: {symbol} ({exchange})
-        - 수량: {quantity}주
-        - 가격: ${price_info['price']:.2f}
-        - 예상 금액: ${price_info['price'] * quantity:.2f}
+        st.markdown("""
+        **실행 시간 (한국 시간)**
+        - 시작: 23:30
+        - 종료: 06:00
+        - 주기: 30분마다
+        - 요일: 평일(월~금)
         """)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ 확인", use_container_width=True):
-                try:
-                    with st.spinner("주문 전송 중..."):
-                        result = st.session_state.overseas.buy_limit_order(
-                            symbol=symbol,
-                            quantity=quantity,
-                            price=price_info['price'],
-                            exchange=exchange,
-                            is_real=is_real_trading,
-                        )
+    with col2:
+        st.markdown("""
+        **매매 전략**
+        - 조건: 현재가 < 20일 이동평균
+        - 주문: 지정가 (현재가 기준)
+        - 수량: 종목당 1주
+        """)
 
-                        # 슬랙 알림
-                        slack = SlackBot()
-                        slack.send(f"{'🔴' if is_real_trading else '🟢'} [{result['mode']}] {symbol} {quantity}주 매수 주문 @ ${price_info['price']:.2f}")
+    # 현재 장 상태
+    now = datetime.now()
+    hour = now.hour
 
-                    if result["success"]:
-                        st.success(f"✅ 주문 {'전송' if is_real_trading else '시뮬레이션'} 완료! (주문번호: {result['order_no']})")
-                        st.balloons()
-                    else:
-                        st.error("주문 실패")
+    if (hour >= 23 and hour <= 24) or (hour >= 0 and hour < 6):
+        st.success("🟢 미국 장 운영 중 - 자동매매 활성화")
+    else:
+        st.warning("🔴 미국 장 마감 - 자동매매 대기 중")
 
-                except Exception as e:
-                    st.error(f"주문 실패: {e}")
-
-                st.session_state.show_confirm = False
-                st.rerun()
-
-        with col2:
-            if st.button("❌ 취소", use_container_width=True):
-                st.session_state.show_confirm = False
-                st.rerun()
+    st.markdown("---")
+    st.caption("GitHub Actions로 자동 실행 | Slack 알림 연동")
 
 
 if __name__ == "__main__":
