@@ -6,7 +6,7 @@
 import os
 import requests
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # ========================================
 # 자동매매 대상 종목 (auto_trade.py와 동일)
@@ -197,6 +197,12 @@ def calculate_sma(prices: list, period: int = 20) -> float:
 # ========================================
 # Streamlit 앱
 # ========================================
+def get_kst_now():
+    """한국 시간 반환"""
+    KST = timezone(timedelta(hours=9))
+    return datetime.now(KST)
+
+
 def main():
     st.set_page_config(
         page_title="자동매매 모니터링",
@@ -204,8 +210,10 @@ def main():
         layout="wide",
     )
 
+    now_kst = get_kst_now()
+
     st.title("🤖 자동매매 모니터링 대시보드")
-    st.caption(f"마지막 새로고침: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.caption(f"마지막 새로고침: {now_kst.strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
     # 새로고침 버튼
     col1, col2, col3 = st.columns([1, 1, 8])
@@ -387,11 +395,10 @@ def main():
         - 수량: 종목당 1주
         """)
 
-    # 현재 장 상태
-    now = datetime.now()
-    hour = now.hour
+    # 현재 장 상태 (한국 시간 기준)
+    hour = now_kst.hour
 
-    if (hour >= 23 and hour <= 24) or (hour >= 0 and hour < 6):
+    if (hour >= 23) or (hour < 6):
         st.success("🟢 미국 장 운영 중 - 자동매매 활성화")
     else:
         st.warning("🔴 미국 장 마감 - 자동매매 대기 중")
