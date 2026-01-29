@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 # 매매 대상 종목 리스트 (symbol, exchange, quantity)
 TARGETS = [
     {"symbol": "VRT", "exchange": "NYS", "quantity": 1},   # Vertiv (NYSE)
-    {"symbol": "TSLL", "exchange": "NAS", "quantity": 1},  # Tesla 2x Long (NASDAQ)
+    {"symbol": "SOUN", "exchange": "NAS", "quantity": 1},  # SoundHound AI (NASDAQ)
 ]
 
 IS_REAL_TRADING = True  # 실제 주문 활성화

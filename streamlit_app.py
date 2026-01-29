@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 # ========================================
 TARGETS = [
     {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings"},
-    {"symbol": "TSLL", "exchange": "NAS", "name": "Tesla 2x Long ETF"},
+    {"symbol": "SOUN", "exchange": "NAS", "name": "SoundHound AI"},
 ]
 
 # ========================================
