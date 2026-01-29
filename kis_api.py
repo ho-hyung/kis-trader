@@ -884,6 +884,125 @@ class KisApi:
             "request_body": body,
         }
 
+    # ========================================
+    # 미체결 주문 조회
+    # ========================================
+
+    def get_pending_orders(self, market: str = "KR", exchange: str = "NASD") -> dict:
+        """
+        미체결 주문 조회
+
+        Args:
+            market: "KR" (국내) 또는 "US" (미국)
+            exchange: 해외 거래소 코드 (NASD, NYSE, AMEX)
+
+        Returns:
+            미체결 주문 목록
+        """
+        if market.upper() == "KR":
+            return self._get_kr_pending_orders()
+        elif market.upper() == "US":
+            return self._get_us_pending_orders(exchange)
+        else:
+            raise ValueError(f"Unsupported market: {market}")
+
+    def _get_kr_pending_orders(self) -> dict:
+        """국내주식 미체결 주문 조회"""
+        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
+        tr_id = "TTTC8036R"  # 실전투자 미체결 조회
+
+        headers = self._get_auth_headers(tr_id)
+        params = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "INQR_DVSN_1": "0",
+            "INQR_DVSN_2": "0",
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if data.get("rt_cd") != "0":
+                raise ValueError(f"API error: {data.get('msg1')}")
+
+            orders = []
+            for item in data.get("output", []):
+                orders.append({
+                    "order_no": item.get("odno"),
+                    "code": item.get("pdno"),
+                    "name": item.get("prdt_name"),
+                    "order_type": "buy" if item.get("sll_buy_dvsn_cd") == "02" else "sell",
+                    "order_qty": int(item.get("ord_qty", 0)),
+                    "remain_qty": int(item.get("psbl_qty", 0)),
+                    "order_price": int(item.get("ord_unpr", 0)),
+                    "order_time": item.get("ord_tmd"),
+                })
+
+            return {
+                "market": "KR",
+                "orders": orders,
+                "count": len(orders),
+                "raw": data,
+            }
+
+        except requests.RequestException as e:
+            print(f"KR pending orders request failed: {e}")
+            raise
+
+    def _get_us_pending_orders(self, exchange: str = "NASD") -> dict:
+        """해외주식(미국) 미체결 주문 조회"""
+        url = f"{self.BASE_URL}/uapi/overseas-stock/v1/trading/inquire-nccs"
+        tr_id = "TTTS3018R"  # 실전투자 해외 미체결 조회
+
+        headers = self._get_auth_headers(tr_id)
+        params = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "OVRS_EXCG_CD": exchange,
+            "SORT_SQN": "DS",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if data.get("rt_cd") != "0":
+                raise ValueError(f"API error: {data.get('msg1')}")
+
+            orders = []
+            for item in data.get("output", []):
+                orders.append({
+                    "order_no": item.get("odno"),
+                    "code": item.get("pdno"),
+                    "name": item.get("prdt_name"),
+                    "order_type": "buy" if item.get("sll_buy_dvsn_cd") == "02" else "sell",
+                    "order_qty": int(item.get("ft_ord_qty", 0)),
+                    "remain_qty": int(item.get("nccs_qty", 0)),
+                    "order_price": float(item.get("ft_ord_unpr3", 0)),
+                    "order_time": item.get("ord_tmd"),
+                })
+
+            return {
+                "market": "US",
+                "exchange": exchange,
+                "orders": orders,
+                "count": len(orders),
+                "raw": data,
+            }
+
+        except requests.RequestException as e:
+            print(f"US pending orders request failed: {e}")
+            raise
+
 
 if __name__ == "__main__":
     from slack_bot import SlackBot
