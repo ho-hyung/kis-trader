@@ -763,6 +763,127 @@ class KisApi:
             "request_body": body,
         }
 
+    # ========================================
+    # 주문 취소
+    # ========================================
+
+    def cancel_order(self, market: str, order_no: str, code: str, quantity: int, exchange: str = "NASD") -> dict:
+        """
+        주문 취소
+
+        Args:
+            market: "KR" (국내) 또는 "US" (미국)
+            order_no: 원주문번호
+            code: 종목코드
+            quantity: 취소 수량
+            exchange: 해외 거래소 코드 (NASD, NYSE, AMEX)
+
+        Returns:
+            취소 결과 딕셔너리
+        """
+        if market.upper() == "KR":
+            return self._cancel_kr_order(order_no, code, quantity)
+        elif market.upper() == "US":
+            return self._cancel_us_order(order_no, code, quantity, exchange)
+        else:
+            raise ValueError(f"Unsupported market: {market}")
+
+    def _cancel_kr_order(self, order_no: str, code: str, quantity: int) -> dict:
+        """국내주식 주문 취소"""
+        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-rvsecncl"
+        tr_id = "TTTC0803U"  # 실전투자 정정/취소
+
+        headers = self._get_auth_headers(tr_id)
+        body = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "KRX_FWDG_ORD_ORGNO": "",
+            "ORGN_ODNO": order_no,
+            "ORD_DVSN": "00",
+            "RVSE_CNCL_DVSN_CD": "02",  # 취소
+            "ORD_QTY": str(quantity),
+            "ORD_UNPR": "0",
+            "QTY_ALL_ORD_YN": "Y",  # 전량 취소
+        }
+
+        print(f"[KR] Cancel order: {order_no} ({code} x {quantity})")
+        print("Order request prepared (actual POST is commented out for safety)")
+
+        # ================================================
+        # 안전을 위해 실제 주문 요청은 주석 처리
+        # 실제 사용 시 아래 주석을 해제하세요
+        # ================================================
+        # try:
+        #     response = requests.post(url, headers=headers, json=body, timeout=10)
+        #     response.raise_for_status()
+        #     data = response.json()
+        #
+        #     if data.get("rt_cd") != "0":
+        #         raise ValueError(f"Cancel failed: {data.get('msg1')}")
+        #
+        #     return {
+        #         "success": True,
+        #         "order_no": data.get("output", {}).get("ODNO"),
+        #         "raw": data,
+        #     }
+        # except requests.RequestException as e:
+        #     print(f"KR cancel request failed: {e}")
+        #     raise
+
+        return {
+            "success": False,
+            "message": "Cancel not executed (commented out for safety)",
+            "request_body": body,
+        }
+
+    def _cancel_us_order(self, order_no: str, code: str, quantity: int, exchange: str = "NASD") -> dict:
+        """해외주식(미국) 주문 취소"""
+        url = f"{self.BASE_URL}/uapi/overseas-stock/v1/trading/order-rvsecncl"
+        tr_id = "TTTT1004U"  # 실전투자 해외 정정/취소
+
+        headers = self._get_auth_headers(tr_id)
+        body = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_product_code,
+            "OVRS_EXCG_CD": exchange,
+            "PDNO": code,
+            "ORGN_ODNO": order_no,
+            "RVSE_CNCL_DVSN_CD": "02",  # 취소
+            "ORD_QTY": str(quantity),
+            "OVRS_ORD_UNPR": "0",
+            "ORD_SVR_DVSN_CD": "0",
+        }
+
+        print(f"[US] Cancel order: {order_no} ({code} x {quantity}, {exchange})")
+        print("Order request prepared (actual POST is commented out for safety)")
+
+        # ================================================
+        # 안전을 위해 실제 주문 요청은 주석 처리
+        # 실제 사용 시 아래 주석을 해제하세요
+        # ================================================
+        # try:
+        #     response = requests.post(url, headers=headers, json=body, timeout=10)
+        #     response.raise_for_status()
+        #     data = response.json()
+        #
+        #     if data.get("rt_cd") != "0":
+        #         raise ValueError(f"Cancel failed: {data.get('msg1')}")
+        #
+        #     return {
+        #         "success": True,
+        #         "order_no": data.get("output", {}).get("ODNO"),
+        #         "raw": data,
+        #     }
+        # except requests.RequestException as e:
+        #     print(f"US cancel request failed: {e}")
+        #     raise
+
+        return {
+            "success": False,
+            "message": "Cancel not executed (commented out for safety)",
+            "request_body": body,
+        }
+
 
 if __name__ == "__main__":
     from slack_bot import SlackBot
