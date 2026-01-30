@@ -93,6 +93,24 @@ class GitHubWorkflow:
 
 
 # ========================================
+# KIS API 토큰 캐싱 (1분 제한 우회)
+# ========================================
+@st.cache_data(ttl=1800, show_spinner=False)  # 30분 캐싱
+def get_cached_token(app_key: str, app_secret: str) -> str:
+    """토큰을 캐싱하여 API 호출 제한(1분) 우회"""
+    url = "https://openapi.koreainvestment.com:9443/oauth2/tokenP"
+    body = {
+        "grant_type": "client_credentials",
+        "appkey": app_key,
+        "appsecret": app_secret,
+    }
+    response = requests.post(url, json=body, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("access_token")
+
+
+# ========================================
 # KIS API 클래스
 # ========================================
 class KisAuth:
@@ -106,16 +124,8 @@ class KisAuth:
         self.access_token = None
 
     def get_access_token(self) -> str:
-        url = f"{self.BASE_URL}/oauth2/tokenP"
-        body = {
-            "grant_type": "client_credentials",
-            "appkey": self.app_key,
-            "appsecret": self.app_secret,
-        }
-        response = requests.post(url, json=body, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        self.access_token = data.get("access_token")
+        # 캐싱된 토큰 사용
+        self.access_token = get_cached_token(self.app_key, self.app_secret)
         return self.access_token
 
     def get_auth_headers(self, tr_id: str) -> dict:
@@ -303,7 +313,15 @@ def main():
         auth.get_access_token()
         overseas = KisOverseas(auth)
     except Exception as e:
-        st.error(f"API 연결 실패: {e}")
+        error_msg = str(e)
+        st.error(f"API 연결 실패: {error_msg}")
+
+        # 403 에러인 경우 캐시 클리어 버튼 제공
+        if "403" in error_msg:
+            st.warning("토큰 발급 제한(1분)에 걸렸을 수 있습니다. 캐시를 초기화하고 다시 시도해보세요.")
+            if st.button("🔄 캐시 초기화 후 재시도"):
+                get_cached_token.clear()
+                st.rerun()
         return
 
     # ========================================
