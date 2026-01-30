@@ -8,9 +8,13 @@ GitHub Actions에서 정기 실행
 """
 
 import os
+import json
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
+
+# 매매 기록 파일 경로
+TRADE_HISTORY_FILE = "trade_history.json"
 
 # ========================================
 # 설정
@@ -612,6 +616,45 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
 
 
 # ========================================
+# 매매 기록 저장
+# ========================================
+def save_trade_history(results: list):
+    """매매 결과를 JSON 파일에 저장"""
+    try:
+        # 기존 기록 로드
+        history = []
+        if os.path.exists(TRADE_HISTORY_FILE):
+            with open(TRADE_HISTORY_FILE, "r") as f:
+                history = json.load(f)
+
+        # 새 기록 추가
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for result in results:
+            if result.get("action") in ["BUY", "TAKE_PROFIT", "STOP_LOSS"]:
+                record = {
+                    "timestamp": timestamp,
+                    "symbol": result.get("symbol"),
+                    "action": result.get("action"),
+                    "price": result.get("price"),
+                    "quantity": result.get("quantity"),
+                    "profit_rate": result.get("profit_rate"),
+                }
+                history.append(record)
+
+        # 최근 100개만 유지
+        history = history[-100:]
+
+        # 저장
+        with open(TRADE_HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+
+        print(f"[기록] 매매 기록 저장 완료 ({len(history)}건)")
+
+    except Exception as e:
+        print(f"[기록] 저장 실패: {e}")
+
+
+# ========================================
 # 메인 실행
 # ========================================
 def main():
@@ -699,6 +742,9 @@ def main():
 
         # 슬랙 요약 전송
         slack.send("📊 자동매매 완료\n" + "\n".join(summary_lines))
+
+        # 매매 기록 저장
+        save_trade_history(exit_results + buy_results)
 
         print("\n" + "=" * 50)
         print("자동 매매 완료")
