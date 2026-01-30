@@ -16,9 +16,9 @@ from dotenv import load_dotenv
 # ========================================
 # 설정
 # ========================================
-# 매매 대상 종목 리스트 (symbol, exchange, quantity)
+# 매매 대상 종목 리스트
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS", "quantity": 1},   # Vertiv (NYSE)
+    {"symbol": "VRT", "exchange": "NYS"},   # Vertiv (NYSE) - 잔고 기반 자동 수량 계산
 ]
 
 IS_REAL_TRADING = True  # 실제 주문 활성화
@@ -390,11 +390,8 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
 # ========================================
 # 단일 종목 매수 처리
 # ========================================
-def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: str, quantity: int, max_quantity: int = None):
-    """단일 종목에 대한 매수 로직 실행
-
-    max_quantity가 설정된 경우, 잔고 내에서 최대 수량까지 매수
-    """
+def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: str):
+    """단일 종목에 대한 매수 로직 실행 (잔고 기반 자동 수량 계산)"""
     print(f"\n{'='*40}")
     print(f"매수 체크: {symbol} ({exchange})")
     print('='*40)
@@ -420,25 +417,25 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
 
         # 4. 주문 실행
         if buy_signal:
-            # 잔고 기반 수량 계산 (max_quantity가 설정된 경우)
-            final_quantity = quantity
-            if max_quantity and max_quantity > quantity:
-                print(f"[4] 잔고 기반 수량 계산...")
-                try:
-                    available_usd = overseas.get_order_amount()
-                    print(f"    주문가능금액: ${available_usd:.2f}")
+            # 잔고 기반 수량 계산
+            print(f"[4] 잔고 기반 수량 계산...")
+            try:
+                available_usd = overseas.get_order_amount()
+                print(f"    주문가능금액: ${available_usd:.2f}")
 
-                    # 최대 몇 주 살 수 있는지 계산
-                    affordable_qty = int(available_usd / current_price)
-                    # max_quantity를 초과하지 않도록 제한
-                    final_quantity = min(max(affordable_qty, quantity), max_quantity)
-                    print(f"    계산: ${available_usd:.2f} / ${current_price:.2f} = {affordable_qty}주 가능")
-                    print(f"    최종 수량: {final_quantity}주 (최소 {quantity}, 최대 {max_quantity})")
-                except Exception as e:
-                    print(f"    잔고 조회 실패, 기본 수량 사용: {e}")
-                    final_quantity = quantity
+                # 최대 몇 주 살 수 있는지 계산
+                final_quantity = int(available_usd / current_price)
+                print(f"    계산: ${available_usd:.2f} / ${current_price:.2f} = {final_quantity}주 가능")
 
-            print(f"[5] 매수 주문 실행... ({final_quantity}주)")
+                if final_quantity < 1:
+                    print(f"    💸 잔고 부족으로 매수 불가 (최소 1주 필요: ${current_price:.2f})")
+                    return {"symbol": symbol, "action": "NO_BALANCE", "price": current_price, "available": available_usd}
+
+            except Exception as e:
+                print(f"    잔고 조회 실패: {e}")
+                return {"symbol": symbol, "action": "ERROR", "error": str(e)}
+
+            print(f"[5] 매수 주문 실행... ({final_quantity}주, 총 ${final_quantity * current_price:.2f})")
             try:
                 result = overseas.buy_limit_order(symbol, final_quantity, current_price, exchange)
 
@@ -508,8 +505,6 @@ def main():
                 slack=slack,
                 symbol=target["symbol"],
                 exchange=target["exchange"],
-                quantity=target["quantity"],
-                max_quantity=target.get("max_quantity"),
             )
             buy_results.append(result)
 
@@ -537,7 +532,8 @@ def main():
             elif r["action"] == "SKIP":
                 line = f"⏸️ {r['symbol']}: 패스 (${r['price']:.2f} > SMA ${r['sma']:.2f})"
             elif r["action"] == "NO_BALANCE":
-                line = f"💸 {r['symbol']}: 잔고 부족으로 패스"
+                avail = r.get("available", 0)
+                line = f"💸 {r['symbol']}: 잔고 부족 (${avail:.2f} < ${r['price']:.2f})"
             elif r["action"] == "ERROR":
                 line = f"❌ {r['symbol']}: 오류"
             else:
