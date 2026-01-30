@@ -1,11 +1,10 @@
 """
-자동 매매 스크립트 (스윙 트레이딩)
+자동 매매 스크립트 (멀티 전략)
 GitHub Actions에서 정기 실행
 
-전략:
-- 매수: 현재가 < 20일 이동평균 (눌림목 매수)
-- 익절: +10% 도달 시 전량 매도
-- 손절: -5% 도달 시 전량 매도
+종목별 전략:
+- VRT (상승 추세): 눌림목 매수 (현재가 < SMA), 익절 +10%, 손절 -5%
+- ORCL (하락 추세): 반등 매수 (현재가 > SMA), 익절 +7%, 손절 -4%
 """
 
 import os
@@ -16,14 +15,25 @@ from dotenv import load_dotenv
 # ========================================
 # 설정
 # ========================================
-# 매매 대상 종목 리스트
+# 매매 대상 종목 리스트 (종목별 전략 설정)
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS"},   # Vertiv (NYSE) - 잔고 기반 자동 수량 계산
+    {
+        "symbol": "VRT",
+        "exchange": "NYS",
+        "strategy": "pullback",      # 눌림목 매수 (상승 추세용)
+        "take_profit": 10.0,         # +10% 익절
+        "stop_loss": -5.0,           # -5% 손절
+    },
+    {
+        "symbol": "ORCL",
+        "exchange": "NYS",
+        "strategy": "breakout",      # 반등 매수 (하락 추세용)
+        "take_profit": 7.0,          # +7% 익절 (보수적)
+        "stop_loss": -4.0,           # -4% 손절 (빠른 손절)
+    },
 ]
 
 IS_REAL_TRADING = True  # 실제 주문 활성화
-STOP_LOSS_PERCENT = -5.0   # 손절매 기준 (-5%)
-TAKE_PROFIT_PERCENT = 10.0  # 익절 기준 (+10%)
 
 # ========================================
 # 환경변수 로드 (로컬 or GitHub Actions)
@@ -295,23 +305,61 @@ def calculate_sma(prices: list, period: int = 20) -> float:
     return sum(prices[:period]) / period
 
 
-def should_buy(current_price: float, sma_20: float) -> bool:
+def should_buy(current_price: float, sma_20: float, strategy: str) -> tuple:
     """
-    매수 조건: 현재가가 20일 이평선 아래면 매수
+    전략별 매수 조건 판단
+
+    Returns:
+        (bool, str): (매수 여부, 사유)
     """
     if sma_20 == 0:
-        return False
-    return current_price < sma_20
+        return False, "SMA 데이터 부족"
+
+    if strategy == "pullback":
+        # 눌림목 매수: 현재가 < SMA (상승 추세에서 조정 시 매수)
+        if current_price < sma_20:
+            return True, f"눌림목 (${current_price:.2f} < SMA ${sma_20:.2f})"
+        return False, f"SMA 위에 있음 (${current_price:.2f} > SMA ${sma_20:.2f})"
+
+    elif strategy == "breakout":
+        # 반등 매수: 현재가 > SMA (하락 추세에서 반등 시 매수)
+        if current_price > sma_20:
+            return True, f"반등 확인 (${current_price:.2f} > SMA ${sma_20:.2f})"
+        return False, f"SMA 아래 있음 (${current_price:.2f} < SMA ${sma_20:.2f})"
+
+    else:
+        return False, f"알 수 없는 전략: {strategy}"
+
+
+# ========================================
+# 종목별 설정 조회
+# ========================================
+def get_target_config(symbol: str) -> dict:
+    """종목별 설정 조회 (기본값 포함)"""
+    for target in TARGETS:
+        if target["symbol"] == symbol:
+            return {
+                "exchange": target.get("exchange", "NYS"),
+                "strategy": target.get("strategy", "pullback"),
+                "take_profit": target.get("take_profit", 10.0),
+                "stop_loss": target.get("stop_loss", -5.0),
+            }
+    # 기본값 반환
+    return {
+        "exchange": "NYS",
+        "strategy": "pullback",
+        "take_profit": 10.0,
+        "stop_loss": -5.0,
+    }
 
 
 # ========================================
 # 익절/손절 체크
 # ========================================
 def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
-    """보유 종목 익절/손절 체크"""
+    """보유 종목 익절/손절 체크 (종목별 기준 적용)"""
     print(f"\n{'='*40}")
     print("익절/손절 체크")
-    print(f"익절 기준: +{TAKE_PROFIT_PERCENT}% | 손절 기준: {STOP_LOSS_PERCENT}%")
     print('='*40)
 
     results = []
@@ -330,18 +378,18 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
             current_price = holding["current_price"]
             profit_rate = holding["profit_rate"]
 
+            # 종목별 설정 조회
+            config = get_target_config(symbol)
+            take_profit = config["take_profit"]
+            stop_loss = config["stop_loss"]
+            exchange = config["exchange"]
+
             print(f"\n{symbol}: {quantity}주 | 평단가: ${avg_price:.2f} | 현재가: ${current_price:.2f} | 손익: {profit_rate:+.2f}%")
+            print(f"  기준: 익절 +{take_profit}% | 손절 {stop_loss}%")
 
-            # 거래소 코드 찾기
-            exchange = "NAS"  # 기본값
-            for target in TARGETS:
-                if target["symbol"] == symbol:
-                    exchange = target["exchange"]
-                    break
-
-            # 익절 조건 확인 (+10% 이상)
-            if profit_rate >= TAKE_PROFIT_PERCENT:
-                print(f"  🎉 익절 조건 충족! ({profit_rate:.2f}% >= +{TAKE_PROFIT_PERCENT}%)")
+            # 익절 조건 확인
+            if profit_rate >= take_profit:
+                print(f"  🎉 익절 조건 충족! ({profit_rate:.2f}% >= +{take_profit}%)")
 
                 try:
                     result = overseas.sell_market_order(symbol, quantity, exchange)
@@ -358,9 +406,9 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
                     slack.send(f"❌ {symbol} 익절 오류: {e}")
                     results.append({"symbol": symbol, "action": "TAKE_PROFIT_ERROR", "error": str(e)})
 
-            # 손절 조건 확인 (-5% 이하)
-            elif profit_rate <= STOP_LOSS_PERCENT:
-                print(f"  🚨 손절매 조건 충족! ({profit_rate:.2f}% <= {STOP_LOSS_PERCENT}%)")
+            # 손절 조건 확인
+            elif profit_rate <= stop_loss:
+                print(f"  🚨 손절매 조건 충족! ({profit_rate:.2f}% <= {stop_loss}%)")
 
                 try:
                     result = overseas.sell_market_order(symbol, quantity, exchange)
@@ -378,7 +426,7 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
                     results.append({"symbol": symbol, "action": "STOP_LOSS_ERROR", "error": str(e)})
 
             else:
-                print(f"  ⏳ 홀딩 중 (손절 {STOP_LOSS_PERCENT}% < 현재 {profit_rate:+.2f}% < 익절 +{TAKE_PROFIT_PERCENT}%)")
+                print(f"  ⏳ 홀딩 중 (손절 {stop_loss}% < 현재 {profit_rate:+.2f}% < 익절 +{take_profit}%)")
 
     except Exception as e:
         print(f"[ERROR] 익절/손절 체크 오류: {e}")
@@ -391,9 +439,15 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
 # 단일 종목 매수 처리
 # ========================================
 def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: str):
-    """단일 종목에 대한 매수 로직 실행 (잔고 기반 자동 수량 계산)"""
+    """단일 종목에 대한 매수 로직 실행 (전략별 조건 + 잔고 기반 수량 계산)"""
+    # 종목별 설정 조회
+    config = get_target_config(symbol)
+    strategy = config["strategy"]
+    strategy_name = "눌림목" if strategy == "pullback" else "반등"
+
     print(f"\n{'='*40}")
     print(f"매수 체크: {symbol} ({exchange})")
+    print(f"전략: {strategy_name} ({strategy})")
     print('='*40)
 
     try:
@@ -410,10 +464,10 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
         print(f"    20일 SMA: ${sma_20:.2f}")
         print(f"    데이터 수: {len(daily_prices)}일")
 
-        # 3. 매수 조건 확인
-        print(f"[3] 매수 조건 확인...")
-        buy_signal = should_buy(current_price, sma_20)
-        print(f"    현재가 < 20SMA: {current_price:.2f} < {sma_20:.2f} = {buy_signal}")
+        # 3. 매수 조건 확인 (전략별)
+        print(f"[3] 매수 조건 확인 ({strategy_name} 전략)...")
+        buy_signal, reason = should_buy(current_price, sma_20, strategy)
+        print(f"    결과: {buy_signal} - {reason}")
 
         # 4. 주문 실행
         if buy_signal:
@@ -460,7 +514,7 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
                     raise
         else:
             print(f"[4] 매수 조건 미충족 - 패스")
-            return {"symbol": symbol, "action": "SKIP", "price": current_price, "sma": sma_20}
+            return {"symbol": symbol, "action": "SKIP", "price": current_price, "sma": sma_20, "reason": reason}
 
     except Exception as e:
         print(f"[ERROR] {symbol} 처리 중 오류: {e}")
@@ -474,17 +528,27 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
 def main():
     now = datetime.now()
     mode_str = "🔴 실전" if IS_REAL_TRADING else "🟢 시뮬레이션"
-    symbols_str = ", ".join([t["symbol"] for t in TARGETS])
 
     print("=" * 50)
     print(f"자동 매매 실행 ({mode_str})")
     print(f"시간: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"대상: {symbols_str}")
-    print(f"익절: +{TAKE_PROFIT_PERCENT}% | 손절: {STOP_LOSS_PERCENT}%")
+    print("=" * 50)
+
+    # 종목별 전략 출력
+    strategy_lines = []
+    for t in TARGETS:
+        s = t.get("strategy", "pullback")
+        s_name = "눌림목" if s == "pullback" else "반등"
+        tp = t.get("take_profit", 10.0)
+        sl = t.get("stop_loss", -5.0)
+        line = f"{t['symbol']}: {s_name} (익절 +{tp}%, 손절 {sl}%)"
+        strategy_lines.append(line)
+        print(f"  {line}")
+
     print("=" * 50)
 
     slack = SlackBot()
-    slack.send(f"🤖 자동매매 시작 ({mode_str})\n대상: {symbols_str}\n익절: +{TAKE_PROFIT_PERCENT}% | 손절: {STOP_LOSS_PERCENT}%")
+    slack.send(f"🤖 자동매매 시작 ({mode_str})\n" + "\n".join(strategy_lines))
 
     try:
         # 1. 인증
@@ -530,7 +594,8 @@ def main():
                 qty = r.get("quantity", 1)
                 line = f"✅ {r['symbol']}: {qty}주 매수 @ ${r['price']:.2f}"
             elif r["action"] == "SKIP":
-                line = f"⏸️ {r['symbol']}: 패스 (${r['price']:.2f} > SMA ${r['sma']:.2f})"
+                reason = r.get("reason", "조건 미충족")
+                line = f"⏸️ {r['symbol']}: 패스 ({reason})"
             elif r["action"] == "NO_BALANCE":
                 avail = r.get("available", 0)
                 line = f"💸 {r['symbol']}: 잔고 부족 (${avail:.2f} < ${r['price']:.2f})"
