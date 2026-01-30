@@ -29,8 +29,8 @@ TARGETS = [
         "take_profit": 10.0,         # +10% 익절
         "stop_loss": -5.0,           # -5% 손절
         "use_sma60": True,           # 60일 SMA 체크 (장기 추세 확인)
-        "trailing_start": 5.0,       # +5% 도달 시 트레일링 스탑 활성화
-        "trailing_stop": 3.0,        # 고점 대비 -3% 하락 시 매도
+        "trailing_start": 7.0,       # +7% 도달 시 트레일링 스탑 활성화
+        "trailing_stop": 5.0,        # 고점 대비 -5% 하락 시 매도 (변동성 고려)
     },
     {
         "symbol": "ORCL",
@@ -39,8 +39,8 @@ TARGETS = [
         "take_profit": 7.0,          # +7% 익절 (보수적)
         "stop_loss": -4.0,           # -4% 손절 (빠른 손절)
         "max_rsi": 70,               # RSI 70 이상이면 매수 안 함 (과매수 회피)
-        "trailing_start": 4.0,       # +4% 도달 시 트레일링 스탑 활성화
-        "trailing_stop": 2.0,        # 고점 대비 -2% 하락 시 매도
+        "trailing_start": 5.0,       # +5% 도달 시 트레일링 스탑 활성화
+        "trailing_stop": 3.0,        # 고점 대비 -3% 하락 시 매도 (노이즈 방지)
     },
 ]
 

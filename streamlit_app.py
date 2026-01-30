@@ -18,8 +18,8 @@ TRADE_HISTORY_FILE = "trade_history.json"
 # 자동매매 대상 종목 (auto_trade.py와 동일)
 # ========================================
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5, "trailing": "+5%→-3%", "extra": "SMA60 체크"},
-    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+4%→-2%", "extra": "RSI<70"},
+    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5, "trailing": "+7%→-5%", "extra": "SMA60 체크"},
+    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+5%→-3%", "extra": "RSI<70"},
 ]
 
 # GitHub 저장소 정보
@@ -719,8 +719,8 @@ def main():
     with col2:
         st.markdown("""
         **종목별 전략**
-        - VRT: 눌림목 + 트레일링(+5%→-3%)
-        - ORCL: 반등 + 트레일링(+4%→-2%)
+        - VRT: 눌림목 + 트레일링(+7%→-5%)
+        - ORCL: 반등 + 트레일링(+5%→-3%)
         """)
 
     with col3:
