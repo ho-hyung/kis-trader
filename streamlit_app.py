@@ -438,12 +438,14 @@ def main():
     # 1. 주문가능금액
     # ========================================
     st.subheader("💰 주문가능금액")
+    exchange_rate = 0
     try:
         amount = overseas.get_order_amount()
+        exchange_rate = amount['exchange_rate']
         col1, col2, col3 = st.columns(3)
         col1.metric("달러", f"${amount['usd']:.2f}")
-        col2.metric("원화", f"₩{amount['krw']:,.0f}")
-        col3.metric("환율", f"{amount['exchange_rate']:,.2f}원/$")
+        col2.metric("원화", f"{amount['krw']:,.0f}원")
+        col3.metric("환율", f"{exchange_rate:,.2f}원/$")
     except Exception as e:
         st.error(f"주문가능금액 조회 실패: {e}")
 
@@ -522,9 +524,13 @@ def main():
                     st.info(f"**{symbol}** - {name}")
                     signal_text = "⏸️ 대기 중"
 
+                # 원화 환산
+                krw_price = current_price * exchange_rate if exchange_rate > 0 else 0
+                price_label = f"${current_price:.2f}" + (f" ({krw_price:,.0f}원)" if krw_price > 0 else "")
+
                 st.metric(
                     label="현재가",
-                    value=f"${current_price:.2f}",
+                    value=price_label,
                     delta=f"{change_rate:+.2f}%",
                 )
 
