@@ -146,8 +146,8 @@ class KisOverseas:
 
         return prices
 
-    def buy_limit_order(self, symbol: str, quantity: int, price: float, exchange: str = "NYS") -> dict:
-        """지정가 매수"""
+    def buy_market_order(self, symbol: str, quantity: int, exchange: str = "NYS") -> dict:
+        """시장가 매수"""
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
         tr_id = "TTTT1002U"  # 실전투자 해외매수
 
@@ -160,7 +160,7 @@ class KisOverseas:
             "OVRS_EXCG_CD": exchange_map.get(exchange, "NYSE"),
             "PDNO": symbol,
             "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": str(price),
+            "OVRS_ORD_UNPR": "0",  # 시장가
             "ORD_SVR_DVSN_CD": "0",
             "ORD_DVSN": "00",
         }
@@ -489,12 +489,12 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
                 print(f"    잔고 조회 실패: {e}")
                 return {"symbol": symbol, "action": "ERROR", "error": str(e)}
 
-            print(f"[5] 매수 주문 실행... ({final_quantity}주, 총 ${final_quantity * current_price:.2f})")
+            print(f"[5] 시장가 매수 주문... ({final_quantity}주)")
             try:
-                result = overseas.buy_limit_order(symbol, final_quantity, current_price, exchange)
+                result = overseas.buy_market_order(symbol, final_quantity, exchange)
 
                 if result["success"]:
-                    msg = f"✅ [{result['mode']}] {symbol} {final_quantity}주 매수!\n가격: ${current_price:.2f}\n조건: 현재가 < 20SMA"
+                    msg = f"✅ [{result['mode']}] {symbol} {final_quantity}주 시장가 매수!\n주문번호: {result['order_no']}"
                     print(f"    {msg}")
                     slack.send(msg)
                     return {"symbol": symbol, "action": "BUY", "price": current_price, "quantity": final_quantity}
