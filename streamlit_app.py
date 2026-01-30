@@ -19,7 +19,7 @@ TRADE_HISTORY_FILE = "trade_history.json"
 # ========================================
 TARGETS = [
     {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5, "trailing": "+7%→-5%", "cooldown": 4, "extra": "SMA60 체크"},
-    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+5%→-3%", "cooldown": 2, "extra": "RSI<70", "scout": "RSI<40 시 50%"},
+    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+5%→-3%", "cooldown": 2, "extra": "RSI<70", "scout": "RSI<35 시 50%"},
 ]
 
 # GitHub 저장소 정보

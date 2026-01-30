@@ -46,7 +46,7 @@ TARGETS = [
         "cooldown_hours": 2,         # 손절 후 2시간 재진입 금지 (노이즈 대응)
         # 정찰병 매수 (우량주 바겐세일)
         "scout_enabled": True,       # 정찰병 매수 활성화
-        "scout_rsi": 40,             # RSI 40 미만이면 정찰병 투입
+        "scout_rsi": 35,             # RSI 35 미만이면 정찰병 투입 (진짜 과매도)
         "scout_ratio": 0.5,          # 정찰병은 50% 물량
     },
 ]
