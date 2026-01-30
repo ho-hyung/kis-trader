@@ -542,9 +542,18 @@ def main():
                 sma_20 = data["sma_20"]
                 df["sma20"] = sma_20
 
-                # Altair 차트 (색상 지정)
+                # 가장 가까운 포인트 선택 (넓은 영역)
+                nearest = alt.selection_point(
+                    nearest=True,
+                    on="mouseover",
+                    fields=["date"],
+                    empty=False
+                )
+
+                # 기본 차트
                 base = alt.Chart(df).encode(x=alt.X("date:T", title=""))
 
+                # 라인 차트
                 line_close = base.mark_line(color="#1f77b4", strokeWidth=2).encode(
                     y=alt.Y("close:Q", title="가격($)")
                 )
@@ -552,7 +561,30 @@ def main():
                     y=alt.Y("sma20:Q")
                 )
 
-                chart = (line_close + line_sma).properties(height=200)
+                # 투명 선택 영역 (전체 높이) + 툴팁
+                selectors = base.mark_rule(strokeWidth=20, opacity=0).encode(
+                    tooltip=[
+                        alt.Tooltip("date:T", title="날짜", format="%Y-%m-%d"),
+                        alt.Tooltip("close:Q", title="종가", format="$.2f"),
+                        alt.Tooltip("sma20:Q", title="20일선", format="$.2f"),
+                    ]
+                ).add_params(nearest)
+
+                # 선택된 포인트 표시
+                points = base.mark_circle(size=80, color="#1f77b4").encode(
+                    y=alt.Y("close:Q"),
+                    opacity=alt.condition(nearest, alt.value(1), alt.value(0))
+                )
+
+                # 세로선 (선택 위치 표시)
+                rules = base.mark_rule(color="gray", strokeDash=[3, 3]).encode(
+                    opacity=alt.condition(nearest, alt.value(0.5), alt.value(0))
+                ).transform_filter(nearest)
+
+                chart = alt.layer(
+                    line_close, line_sma, selectors, points, rules
+                ).properties(height=200)
+
                 st.altair_chart(chart, use_container_width=True)
                 st.caption(f"{symbol} - 🔵 종가 / 🟠 20일선")
 
