@@ -12,8 +12,8 @@ from datetime import datetime, timedelta, timezone
 # 자동매매 대상 종목 (auto_trade.py와 동일)
 # ========================================
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings"},
-    {"symbol": "SOUN", "exchange": "NAS", "name": "SoundHound AI"},
+    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "quantity": 2},  # 메인
+    {"symbol": "SOUN", "exchange": "NAS", "name": "SoundHound AI", "quantity": 1},
 ]
 
 # GitHub 저장소 정보
@@ -473,9 +473,9 @@ def main():
 
     with col2:
         st.markdown("""
-        **매매 전략**
-        - 조건: 현재가 < 20일 이동평균
-        - 주문: 지정가 (현재가 기준)
+        **매매 전략 (스윙)**
+        - 매수: 현재가 < 20일 SMA
+        - 익절: +10% 시 전량 매도
         - 손절: -5% 시 전량 매도
         """)
 

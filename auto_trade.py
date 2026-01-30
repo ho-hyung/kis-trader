@@ -1,8 +1,11 @@
 """
-자동 매매 스크립트
+자동 매매 스크립트 (스윙 트레이딩)
 GitHub Actions에서 정기 실행
 
-전략: VRT(버티브) 현재가가 20일 이동평균선 아래면 1주 매수
+전략:
+- 매수: 현재가 < 20일 이동평균 (눌림목 매수)
+- 익절: +10% 도달 시 전량 매도
+- 손절: -5% 도달 시 전량 매도
 """
 
 import os
@@ -15,12 +18,13 @@ from dotenv import load_dotenv
 # ========================================
 # 매매 대상 종목 리스트 (symbol, exchange, quantity)
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS", "quantity": 1},   # Vertiv (NYSE)
-    {"symbol": "SOUN", "exchange": "NAS", "quantity": 1, "max_quantity": 2},  # SoundHound AI (NASDAQ) - 잔고 내 최대 2주
+    {"symbol": "VRT", "exchange": "NYS", "quantity": 2},   # Vertiv (NYSE) - 메인 종목
+    {"symbol": "SOUN", "exchange": "NAS", "quantity": 1, "max_quantity": 2},  # SoundHound AI (NASDAQ)
 ]
 
 IS_REAL_TRADING = True  # 실제 주문 활성화
-STOP_LOSS_PERCENT = -5.0  # 손절매 기준 (-5%)
+STOP_LOSS_PERCENT = -5.0   # 손절매 기준 (-5%)
+TAKE_PROFIT_PERCENT = 10.0  # 익절 기준 (+10%)
 
 # ========================================
 # 환경변수 로드 (로컬 or GitHub Actions)
@@ -302,12 +306,13 @@ def should_buy(current_price: float, sma_20: float) -> bool:
 
 
 # ========================================
-# 손절매 체크
+# 익절/손절 체크
 # ========================================
-def check_stop_loss(overseas: KisOverseas, slack: SlackBot) -> list:
-    """보유 종목 손절매 체크"""
+def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
+    """보유 종목 익절/손절 체크"""
     print(f"\n{'='*40}")
-    print("손절매 체크")
+    print("익절/손절 체크")
+    print(f"익절 기준: +{TAKE_PROFIT_PERCENT}% | 손절 기준: {STOP_LOSS_PERCENT}%")
     print('='*40)
 
     results = []
@@ -328,18 +333,36 @@ def check_stop_loss(overseas: KisOverseas, slack: SlackBot) -> list:
 
             print(f"\n{symbol}: {quantity}주 | 평단가: ${avg_price:.2f} | 현재가: ${current_price:.2f} | 손익: {profit_rate:+.2f}%")
 
-            # 손절매 조건 확인 (-5% 이하)
-            if profit_rate <= STOP_LOSS_PERCENT:
+            # 거래소 코드 찾기
+            exchange = "NAS"  # 기본값
+            for target in TARGETS:
+                if target["symbol"] == symbol:
+                    exchange = target["exchange"]
+                    break
+
+            # 익절 조건 확인 (+10% 이상)
+            if profit_rate >= TAKE_PROFIT_PERCENT:
+                print(f"  🎉 익절 조건 충족! ({profit_rate:.2f}% >= +{TAKE_PROFIT_PERCENT}%)")
+
+                try:
+                    result = overseas.sell_market_order(symbol, quantity, exchange)
+                    if result["success"]:
+                        msg = f"🎉 익절 달성!\n{symbol} +{profit_rate:.2f}% 수익\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+                        print(f"  {msg}")
+                        slack.send(msg)
+                        results.append({"symbol": symbol, "action": "TAKE_PROFIT", "profit_rate": profit_rate})
+                    else:
+                        print(f"  ❌ 익절 주문 실패")
+                        results.append({"symbol": symbol, "action": "TAKE_PROFIT_FAILED"})
+                except Exception as e:
+                    print(f"  ❌ 익절 주문 오류: {e}")
+                    slack.send(f"❌ {symbol} 익절 오류: {e}")
+                    results.append({"symbol": symbol, "action": "TAKE_PROFIT_ERROR", "error": str(e)})
+
+            # 손절 조건 확인 (-5% 이하)
+            elif profit_rate <= STOP_LOSS_PERCENT:
                 print(f"  🚨 손절매 조건 충족! ({profit_rate:.2f}% <= {STOP_LOSS_PERCENT}%)")
 
-                # 거래소 코드 찾기
-                exchange = "NAS"  # 기본값
-                for target in TARGETS:
-                    if target["symbol"] == symbol:
-                        exchange = target["exchange"]
-                        break
-
-                # 시장가 전량 매도
                 try:
                     result = overseas.sell_market_order(symbol, quantity, exchange)
                     if result["success"]:
@@ -354,12 +377,13 @@ def check_stop_loss(overseas: KisOverseas, slack: SlackBot) -> list:
                     print(f"  ❌ 손절매 주문 오류: {e}")
                     slack.send(f"❌ {symbol} 손절매 오류: {e}")
                     results.append({"symbol": symbol, "action": "STOP_LOSS_ERROR", "error": str(e)})
+
             else:
-                print(f"  ✅ 손절 기준 미달 (현재 {profit_rate:+.2f}% > 기준 {STOP_LOSS_PERCENT}%)")
+                print(f"  ⏳ 홀딩 중 (손절 {STOP_LOSS_PERCENT}% < 현재 {profit_rate:+.2f}% < 익절 +{TAKE_PROFIT_PERCENT}%)")
 
     except Exception as e:
-        print(f"[ERROR] 손절매 체크 오류: {e}")
-        slack.send(f"❌ 손절매 체크 오류: {e}")
+        print(f"[ERROR] 익절/손절 체크 오류: {e}")
+        slack.send(f"❌ 익절/손절 체크 오류: {e}")
 
     return results
 
@@ -460,11 +484,11 @@ def main():
     print(f"자동 매매 실행 ({mode_str})")
     print(f"시간: {now.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"대상: {symbols_str}")
-    print(f"손절 기준: {STOP_LOSS_PERCENT}%")
+    print(f"익절: +{TAKE_PROFIT_PERCENT}% | 손절: {STOP_LOSS_PERCENT}%")
     print("=" * 50)
 
     slack = SlackBot()
-    slack.send(f"🤖 자동매매 시작 ({mode_str})\n대상: {symbols_str}\n손절: {STOP_LOSS_PERCENT}%")
+    slack.send(f"🤖 자동매매 시작 ({mode_str})\n대상: {symbols_str}\n익절: +{TAKE_PROFIT_PERCENT}% | 손절: {STOP_LOSS_PERCENT}%")
 
     try:
         # 1. 인증
@@ -474,8 +498,8 @@ def main():
         overseas = KisOverseas(auth)
         print("[인증] 완료")
 
-        # 2. 손절매 체크 (먼저 실행)
-        stop_loss_results = check_stop_loss(overseas, slack)
+        # 2. 익절/손절 체크 (먼저 실행)
+        exit_results = check_exit_conditions(overseas, slack)
 
         # 3. 각 종목 매수 체크
         buy_results = []
@@ -497,10 +521,13 @@ def main():
 
         summary_lines = []
 
-        # 손절매 결과
-        for r in stop_loss_results:
-            if r["action"] == "STOP_LOSS":
-                line = f"🚨 {r['symbol']}: 손절매 ({r['profit_rate']:.2f}%)"
+        # 익절/손절 결과
+        for r in exit_results:
+            if r["action"] == "TAKE_PROFIT":
+                line = f"🎉 {r['symbol']}: 익절 (+{r['profit_rate']:.2f}%)"
+                summary_lines.append(line)
+            elif r["action"] == "STOP_LOSS":
+                line = f"🚨 {r['symbol']}: 손절 ({r['profit_rate']:.2f}%)"
                 summary_lines.append(line)
 
         # 매수 결과
