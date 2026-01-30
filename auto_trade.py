@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 TRADE_HISTORY_FILE = "trade_history.json"
 TRAILING_STOP_FILE = "trailing_stop_data.json"
 COOLDOWN_FILE = "cooldown_data.json"
+SETTINGS_FILE = "user_settings.json"
 
 # ========================================
 # 설정
@@ -436,6 +437,37 @@ def clear_cooldown(symbol: str):
 
 
 # ========================================
+# 사용자 설정 관리 (대시보드 연동)
+# ========================================
+def load_user_settings() -> dict:
+    """대시보드에서 저장한 사용자 설정 로드"""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[설정] 로드 실패: {e}")
+    return {}
+
+
+def save_user_settings(settings: dict):
+    """사용자 설정 저장"""
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        print(f"[설정] 저장 실패: {e}")
+
+
+def get_user_setting(symbol: str, key: str, default=None):
+    """특정 종목의 사용자 설정 조회"""
+    settings = load_user_settings()
+    if symbol in settings and key in settings[symbol]:
+        return settings[symbol][key]
+    return default
+
+
+# ========================================
 # 매매 전략
 # ========================================
 def calculate_sma(prices: list, period: int = 20) -> float:
@@ -529,10 +561,12 @@ def check_buy_conditions(current_price: float, sma_20: float, strategy: str,
 # 종목별 설정 조회
 # ========================================
 def get_target_config(symbol: str) -> dict:
-    """종목별 설정 조회 (기본값 포함)"""
+    """종목별 설정 조회 (기본값 + 사용자 설정 오버라이드)"""
+    config = None
+
     for target in TARGETS:
         if target["symbol"] == symbol:
-            return {
+            config = {
                 "exchange": target.get("exchange", "NYS"),
                 "strategy": target.get("strategy", "pullback"),
                 "take_profit": target.get("take_profit", 10.0),
@@ -543,24 +577,35 @@ def get_target_config(symbol: str) -> dict:
                 "trailing_stop": target.get("trailing_stop", 3.0),
                 "cooldown_hours": target.get("cooldown_hours", 2),
                 "scout_enabled": target.get("scout_enabled", False),
-                "scout_rsi": target.get("scout_rsi", 40),
+                "scout_rsi": target.get("scout_rsi", 35),
                 "scout_ratio": target.get("scout_ratio", 0.5),
             }
+            break
+
     # 기본값 반환
-    return {
-        "exchange": "NYS",
-        "strategy": "pullback",
-        "take_profit": 10.0,
-        "stop_loss": -5.0,
-        "use_sma60": False,
-        "max_rsi": None,
-        "trailing_start": 5.0,
-        "trailing_stop": 3.0,
-        "cooldown_hours": 2,
-        "scout_enabled": False,
-        "scout_rsi": 40,
-        "scout_ratio": 0.5,
-    }
+    if config is None:
+        config = {
+            "exchange": "NYS",
+            "strategy": "pullback",
+            "take_profit": 10.0,
+            "stop_loss": -5.0,
+            "use_sma60": False,
+            "max_rsi": None,
+            "trailing_start": 5.0,
+            "trailing_stop": 3.0,
+            "cooldown_hours": 2,
+            "scout_enabled": False,
+            "scout_rsi": 35,
+            "scout_ratio": 0.5,
+        }
+
+    # 사용자 설정 오버라이드 (대시보드에서 변경한 설정)
+    user_scout = get_user_setting(symbol, "scout_enabled")
+    if user_scout is not None:
+        config["scout_enabled"] = user_scout
+        print(f"[설정] {symbol} 정찰병: {'ON' if user_scout else 'OFF'} (사용자 설정)")
+
+    return config
 
 
 # ========================================

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 # 매매 기록 파일
 TRADE_HISTORY_FILE = "trade_history.json"
+SETTINGS_FILE = "user_settings.json"
 
 # ========================================
 # 자동매매 대상 종목 (auto_trade.py와 동일)
@@ -334,6 +335,45 @@ def load_trade_history() -> list:
     except Exception:
         pass
     return []
+
+
+def load_user_settings() -> dict:
+    """사용자 설정 로드"""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def save_user_settings(settings: dict):
+    """사용자 설정 저장"""
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def get_scout_enabled(symbol: str) -> bool:
+    """정찰병 설정 조회 (기본값: ORCL만 True)"""
+    settings = load_user_settings()
+    if symbol in settings and "scout_enabled" in settings[symbol]:
+        return settings[symbol]["scout_enabled"]
+    # 기본값: ORCL만 정찰병 활성화
+    return symbol == "ORCL"
+
+
+def set_scout_enabled(symbol: str, enabled: bool):
+    """정찰병 설정 저장"""
+    settings = load_user_settings()
+    if symbol not in settings:
+        settings[symbol] = {}
+    settings[symbol]["scout_enabled"] = enabled
+    save_user_settings(settings)
 
 
 # ========================================
@@ -762,6 +802,61 @@ def main():
         st.info("🟢 미국 장 운영 시간")
     else:
         st.info("🔴 미국 장 마감 시간")
+
+    st.markdown("---")
+
+    # ========================================
+    # 7. 전략 설정
+    # ========================================
+    st.subheader("⚙️ 전략 설정")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**ORCL 정찰병 매수**")
+        st.caption("RSI < 35 시 50% 물량 선진입")
+
+        # 현재 설정 로드
+        current_scout = get_scout_enabled("ORCL")
+
+        # 토글 스위치
+        new_scout = st.toggle(
+            "정찰병 매수 활성화",
+            value=current_scout,
+            key="orcl_scout_toggle"
+        )
+
+        # 설정 변경 감지 및 저장
+        if new_scout != current_scout:
+            set_scout_enabled("ORCL", new_scout)
+            if new_scout:
+                st.success("✅ 정찰병 매수 활성화됨")
+            else:
+                st.warning("⏸️ 정찰병 매수 비활성화됨")
+            st.rerun()
+
+        if current_scout:
+            st.info("🔍 RSI < 35 시 50% 물량 매수")
+        else:
+            st.info("⏸️ 일반 전략만 사용 (20일선 돌파 시 매수)")
+
+    with col2:
+        st.markdown("**현재 잔고 기준 안내**")
+        try:
+            amount = overseas.get_order_amount()
+            orcl_price = 165  # 대략적인 ORCL 가격
+            full_qty = int(amount['usd'] / orcl_price)
+            scout_qty = int((amount['usd'] * 0.5) / orcl_price)
+
+            st.caption(f"주문가능: ${amount['usd']:.2f}")
+            st.caption(f"ORCL 현재가 ~${orcl_price} 기준:")
+            st.caption(f"  • 일반 매수: {full_qty}주 가능")
+            st.caption(f"  • 정찰병 (50%): {scout_qty}주 가능")
+
+            if scout_qty < 1:
+                st.warning("⚠️ 잔고 부족으로 정찰병 매수 불가 (최소 $330 필요)")
+        except Exception:
+            st.caption("잔고 정보를 불러올 수 없습니다")
 
     st.markdown("---")
     st.caption("깃허브 액션으로 자동 실행 | 슬랙 알림 연동")
