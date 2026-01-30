@@ -12,8 +12,8 @@ from datetime import datetime, timedelta, timezone
 # 자동매매 대상 종목 (auto_trade.py와 동일)
 # ========================================
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5},
-    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4},
+    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5, "extra": "SMA60 체크"},
+    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "extra": "RSI<70"},
 ]
 
 # GitHub 저장소 정보
@@ -474,8 +474,8 @@ def main():
     with col2:
         st.markdown("""
         **종목별 전략**
-        - VRT: 눌림목 (가격<SMA), +10%/-5%
-        - ORCL: 반등 (가격>SMA), +7%/-4%
+        - VRT: 눌림목 + SMA60체크
+        - ORCL: 반등 + RSI<70 체크
         """)
 
     with col3:

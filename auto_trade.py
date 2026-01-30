@@ -23,6 +23,7 @@ TARGETS = [
         "strategy": "pullback",      # 눌림목 매수 (상승 추세용)
         "take_profit": 10.0,         # +10% 익절
         "stop_loss": -5.0,           # -5% 손절
+        "use_sma60": True,           # 60일 SMA 체크 (장기 추세 확인)
     },
     {
         "symbol": "ORCL",
@@ -30,6 +31,7 @@ TARGETS = [
         "strategy": "breakout",      # 반등 매수 (하락 추세용)
         "take_profit": 7.0,          # +7% 익절 (보수적)
         "stop_loss": -4.0,           # -4% 손절 (빠른 손절)
+        "max_rsi": 70,               # RSI 70 이상이면 매수 안 함 (과매수 회피)
     },
 ]
 
@@ -305,9 +307,44 @@ def calculate_sma(prices: list, period: int = 20) -> float:
     return sum(prices[:period]) / period
 
 
-def should_buy(current_price: float, sma_20: float, strategy: str) -> tuple:
+def calculate_rsi(prices: list, period: int = 14) -> float:
     """
-    전략별 매수 조건 판단
+    RSI (Relative Strength Index) 계산
+    prices: 최신 가격이 앞에 있는 리스트 (prices[0]이 가장 최근)
+    """
+    if len(prices) < period + 1:
+        return 50  # 데이터 부족 시 중립값 반환
+
+    # 가격 변화량 계산 (최신순이므로 역순으로)
+    gains = []
+    losses = []
+
+    for i in range(period):
+        change = prices[i] - prices[i + 1]  # 오늘 - 어제
+        if change > 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    if avg_loss == 0:
+        return 100  # 손실 없음 = RSI 100
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+
+def check_buy_conditions(current_price: float, sma_20: float, strategy: str,
+                         sma_60: float = None, rsi: float = None,
+                         use_sma60: bool = False, max_rsi: int = None) -> tuple:
+    """
+    전략별 매수 조건 판단 (안전장치 포함)
 
     Returns:
         (bool, str): (매수 여부, 사유)
@@ -316,16 +353,29 @@ def should_buy(current_price: float, sma_20: float, strategy: str) -> tuple:
         return False, "SMA 데이터 부족"
 
     if strategy == "pullback":
-        # 눌림목 매수: 현재가 < SMA (상승 추세에서 조정 시 매수)
-        if current_price < sma_20:
-            return True, f"눌림목 (${current_price:.2f} < SMA ${sma_20:.2f})"
-        return False, f"SMA 위에 있음 (${current_price:.2f} > SMA ${sma_20:.2f})"
+        # 눌림목 매수: 현재가 < 20일 SMA
+        if current_price >= sma_20:
+            return False, f"SMA20 위에 있음 (${current_price:.2f} >= ${sma_20:.2f})"
+
+        # 추가 조건: 60일 SMA 위에 있어야 함 (장기 추세 확인)
+        if use_sma60 and sma_60:
+            if current_price < sma_60:
+                return False, f"⚠️ 장기추세 하락 (${current_price:.2f} < SMA60 ${sma_60:.2f})"
+
+        return True, f"눌림목 매수 OK (${current_price:.2f} < SMA20 ${sma_20:.2f})"
 
     elif strategy == "breakout":
-        # 반등 매수: 현재가 > SMA (하락 추세에서 반등 시 매수)
-        if current_price > sma_20:
-            return True, f"반등 확인 (${current_price:.2f} > SMA ${sma_20:.2f})"
-        return False, f"SMA 아래 있음 (${current_price:.2f} < SMA ${sma_20:.2f})"
+        # 반등 매수: 현재가 > 20일 SMA
+        if current_price <= sma_20:
+            return False, f"SMA20 아래 있음 (${current_price:.2f} <= ${sma_20:.2f})"
+
+        # 추가 조건: RSI가 너무 높지 않아야 함 (과매수 회피)
+        if max_rsi and rsi:
+            if rsi >= max_rsi:
+                return False, f"⚠️ 과매수 구간 (RSI {rsi:.1f} >= {max_rsi})"
+
+        rsi_str = f", RSI {rsi:.1f}" if rsi else ""
+        return True, f"반등 매수 OK (${current_price:.2f} > SMA20 ${sma_20:.2f}{rsi_str})"
 
     else:
         return False, f"알 수 없는 전략: {strategy}"
@@ -343,6 +393,8 @@ def get_target_config(symbol: str) -> dict:
                 "strategy": target.get("strategy", "pullback"),
                 "take_profit": target.get("take_profit", 10.0),
                 "stop_loss": target.get("stop_loss", -5.0),
+                "use_sma60": target.get("use_sma60", False),
+                "max_rsi": target.get("max_rsi", None),
             }
     # 기본값 반환
     return {
@@ -350,6 +402,8 @@ def get_target_config(symbol: str) -> dict:
         "strategy": "pullback",
         "take_profit": 10.0,
         "stop_loss": -5.0,
+        "use_sma60": False,
+        "max_rsi": None,
     }
 
 
@@ -444,10 +498,16 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
     config = get_target_config(symbol)
     strategy = config["strategy"]
     strategy_name = "눌림목" if strategy == "pullback" else "반등"
+    use_sma60 = config.get("use_sma60", False)
+    max_rsi = config.get("max_rsi", None)
 
     print(f"\n{'='*40}")
     print(f"매수 체크: {symbol} ({exchange})")
     print(f"전략: {strategy_name} ({strategy})")
+    if use_sma60:
+        print(f"안전장치: 60일 SMA 체크")
+    if max_rsi:
+        print(f"안전장치: RSI < {max_rsi}")
     print('='*40)
 
     try:
@@ -457,16 +517,45 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
         current_price = price_info["price"]
         print(f"    현재가: ${current_price:.2f}")
 
-        # 2. 20일 이동평균 계산
-        print(f"[2] 20일 이동평균 계산...")
-        daily_prices = overseas.get_daily_prices(symbol, exchange, 20)
-        sma_20 = calculate_sma(daily_prices, 20)
-        print(f"    20일 SMA: ${sma_20:.2f}")
+        # 2. 이동평균 및 RSI 계산 (필요한 만큼 데이터 조회)
+        days_needed = 60 if use_sma60 else 20
+        if max_rsi:
+            days_needed = max(days_needed, 15)  # RSI는 최소 15일 필요
+
+        print(f"[2] 기술 지표 계산... ({days_needed}일 데이터)")
+        daily_prices = overseas.get_daily_prices(symbol, exchange, days_needed)
         print(f"    데이터 수: {len(daily_prices)}일")
 
-        # 3. 매수 조건 확인 (전략별)
+        # 20일 SMA
+        sma_20 = calculate_sma(daily_prices, 20)
+        print(f"    20일 SMA: ${sma_20:.2f}")
+
+        # 60일 SMA (필요시)
+        sma_60 = None
+        if use_sma60:
+            sma_60 = calculate_sma(daily_prices, 60)
+            if sma_60 > 0:
+                print(f"    60일 SMA: ${sma_60:.2f}")
+            else:
+                print(f"    60일 SMA: 데이터 부족")
+
+        # RSI (필요시)
+        rsi = None
+        if max_rsi:
+            rsi = calculate_rsi(daily_prices, 14)
+            print(f"    RSI(14): {rsi:.1f}")
+
+        # 3. 매수 조건 확인 (안전장치 포함)
         print(f"[3] 매수 조건 확인 ({strategy_name} 전략)...")
-        buy_signal, reason = should_buy(current_price, sma_20, strategy)
+        buy_signal, reason = check_buy_conditions(
+            current_price=current_price,
+            sma_20=sma_20,
+            strategy=strategy,
+            sma_60=sma_60,
+            rsi=rsi,
+            use_sma60=use_sma60,
+            max_rsi=max_rsi
+        )
         print(f"    결과: {buy_signal} - {reason}")
 
         # 4. 주문 실행
