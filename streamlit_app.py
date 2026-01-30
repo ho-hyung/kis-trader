@@ -12,8 +12,7 @@ from datetime import datetime, timedelta, timezone
 # 자동매매 대상 종목 (auto_trade.py와 동일)
 # ========================================
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "quantity": 2},  # 메인
-    {"symbol": "SOUN", "exchange": "NAS", "name": "SoundHound AI", "quantity": 1},
+    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings"},
 ]
 
 # GitHub 저장소 정보

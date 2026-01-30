@@ -18,8 +18,7 @@ from dotenv import load_dotenv
 # ========================================
 # 매매 대상 종목 리스트 (symbol, exchange, quantity)
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS", "quantity": 2},   # Vertiv (NYSE) - 메인 종목
-    {"symbol": "SOUN", "exchange": "NAS", "quantity": 1, "max_quantity": 2},  # SoundHound AI (NASDAQ)
+    {"symbol": "VRT", "exchange": "NYS", "quantity": 1},   # Vertiv (NYSE)
 ]
 
 IS_REAL_TRADING = True  # 실제 주문 활성화
