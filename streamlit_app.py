@@ -19,7 +19,7 @@ TRADE_HISTORY_FILE = "trade_history.json"
 # ========================================
 TARGETS = [
     {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5, "trailing": "+7%→-5%", "cooldown": 4, "extra": "SMA60 체크"},
-    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+5%→-3%", "cooldown": 2, "extra": "RSI<70"},
+    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+5%→-3%", "cooldown": 2, "extra": "RSI<70", "scout": "RSI<40 시 50%"},
 ]
 
 # GitHub 저장소 정보
@@ -507,14 +507,17 @@ def main():
                     else:
                         st.caption(f"📍 20일선까지: {abs(distance_to_signal):.1f}% 아래")
 
-                # 익절/손절/트레일링/쿨다운 라인
+                # 익절/손절/트레일링/쿨다운/정찰병 라인
                 trailing = target.get("trailing", "")
                 cooldown = target.get("cooldown", 0)
+                scout = target.get("scout", "")
                 st.caption(f"🎯 익절: +{tp}% | 🚨 손절: {sl}%")
                 if trailing:
                     st.caption(f"📉 트레일링: {trailing}")
                 if cooldown:
                     st.caption(f"⏳ 쿨다운: {cooldown}시간")
+                if scout:
+                    st.caption(f"🔍 정찰병: {scout}")
 
                 st.markdown(f"**{signal_text}**")
 

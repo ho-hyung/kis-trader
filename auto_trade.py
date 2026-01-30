@@ -44,6 +44,10 @@ TARGETS = [
         "trailing_start": 5.0,       # +5% 도달 시 트레일링 스탑 활성화
         "trailing_stop": 3.0,        # 고점 대비 -3% 하락 시 매도 (노이즈 방지)
         "cooldown_hours": 2,         # 손절 후 2시간 재진입 금지 (노이즈 대응)
+        # 정찰병 매수 (우량주 바겐세일)
+        "scout_enabled": True,       # 정찰병 매수 활성화
+        "scout_rsi": 40,             # RSI 40 미만이면 정찰병 투입
+        "scout_ratio": 0.5,          # 정찰병은 50% 물량
     },
 ]
 
@@ -476,43 +480,49 @@ def calculate_rsi(prices: list, period: int = 14) -> float:
 
 def check_buy_conditions(current_price: float, sma_20: float, strategy: str,
                          sma_60: float = None, rsi: float = None,
-                         use_sma60: bool = False, max_rsi: int = None) -> tuple:
+                         use_sma60: bool = False, max_rsi: int = None,
+                         scout_enabled: bool = False, scout_rsi: int = 40) -> tuple:
     """
-    전략별 매수 조건 판단 (안전장치 포함)
+    전략별 매수 조건 판단 (안전장치 + 정찰병 매수 포함)
 
     Returns:
-        (bool, str): (매수 여부, 사유)
+        (bool, str, str): (매수 여부, 사유, 매수유형: "REGULAR" or "SCOUT")
     """
     if sma_20 == 0:
-        return False, "SMA 데이터 부족"
+        return False, "SMA 데이터 부족", None
 
     if strategy == "pullback":
         # 눌림목 매수: 현재가 < 20일 SMA
         if current_price >= sma_20:
-            return False, f"SMA20 위에 있음 (${current_price:.2f} >= ${sma_20:.2f})"
+            return False, f"SMA20 위에 있음 (${current_price:.2f} >= ${sma_20:.2f})", None
 
         # 추가 조건: 60일 SMA 위에 있어야 함 (장기 추세 확인)
         if use_sma60 and sma_60:
             if current_price < sma_60:
-                return False, f"⚠️ 장기추세 하락 (${current_price:.2f} < SMA60 ${sma_60:.2f})"
+                return False, f"⚠️ 장기추세 하락 (${current_price:.2f} < SMA60 ${sma_60:.2f})", None
 
-        return True, f"눌림목 매수 OK (${current_price:.2f} < SMA20 ${sma_20:.2f})"
+        return True, f"눌림목 매수 OK (${current_price:.2f} < SMA20 ${sma_20:.2f})", "REGULAR"
 
     elif strategy == "breakout":
-        # 반등 매수: 현재가 > 20일 SMA
+        # 정찰병 매수 체크 (우량주 바겐세일)
+        # RSI가 매우 낮으면 20일선 아래여도 정찰병 투입
+        if scout_enabled and rsi and rsi < scout_rsi:
+            return True, f"🔍 정찰병 매수 OK (RSI {rsi:.1f} < {scout_rsi}, 바겐세일!)", "SCOUT"
+
+        # 일반 반등 매수: 현재가 > 20일 SMA
         if current_price <= sma_20:
-            return False, f"SMA20 아래 있음 (${current_price:.2f} <= ${sma_20:.2f})"
+            return False, f"SMA20 아래 있음 (${current_price:.2f} <= ${sma_20:.2f})", None
 
         # 추가 조건: RSI가 너무 높지 않아야 함 (과매수 회피)
         if max_rsi and rsi:
             if rsi >= max_rsi:
-                return False, f"⚠️ 과매수 구간 (RSI {rsi:.1f} >= {max_rsi})"
+                return False, f"⚠️ 과매수 구간 (RSI {rsi:.1f} >= {max_rsi})", None
 
         rsi_str = f", RSI {rsi:.1f}" if rsi else ""
-        return True, f"반등 매수 OK (${current_price:.2f} > SMA20 ${sma_20:.2f}{rsi_str})"
+        return True, f"반등 매수 OK (${current_price:.2f} > SMA20 ${sma_20:.2f}{rsi_str})", "REGULAR"
 
     else:
-        return False, f"알 수 없는 전략: {strategy}"
+        return False, f"알 수 없는 전략: {strategy}", None
 
 
 # ========================================
@@ -532,6 +542,9 @@ def get_target_config(symbol: str) -> dict:
                 "trailing_start": target.get("trailing_start", 5.0),
                 "trailing_stop": target.get("trailing_stop", 3.0),
                 "cooldown_hours": target.get("cooldown_hours", 2),
+                "scout_enabled": target.get("scout_enabled", False),
+                "scout_rsi": target.get("scout_rsi", 40),
+                "scout_ratio": target.get("scout_ratio", 0.5),
             }
     # 기본값 반환
     return {
@@ -544,6 +557,9 @@ def get_target_config(symbol: str) -> dict:
         "trailing_start": 5.0,
         "trailing_stop": 3.0,
         "cooldown_hours": 2,
+        "scout_enabled": False,
+        "scout_rsi": 40,
+        "scout_ratio": 0.5,
     }
 
 
@@ -725,18 +741,29 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
             rsi = calculate_rsi(daily_prices, 14)
             print(f"    RSI(14): {rsi:.1f}")
 
-        # 3. 매수 조건 확인 (안전장치 포함)
+        # 3. 매수 조건 확인 (안전장치 + 정찰병 포함)
+        scout_enabled = config.get("scout_enabled", False)
+        scout_rsi = config.get("scout_rsi", 40)
+        scout_ratio = config.get("scout_ratio", 0.5)
+
         print(f"[3] 매수 조건 확인 ({strategy_name} 전략)...")
-        buy_signal, reason = check_buy_conditions(
+        if scout_enabled:
+            print(f"    정찰병 매수 활성화 (RSI < {scout_rsi} 시 {int(scout_ratio*100)}% 물량)")
+
+        buy_signal, reason, buy_type = check_buy_conditions(
             current_price=current_price,
             sma_20=sma_20,
             strategy=strategy,
             sma_60=sma_60,
             rsi=rsi,
             use_sma60=use_sma60,
-            max_rsi=max_rsi
+            max_rsi=max_rsi,
+            scout_enabled=scout_enabled,
+            scout_rsi=scout_rsi
         )
         print(f"    결과: {buy_signal} - {reason}")
+        if buy_type:
+            print(f"    매수유형: {buy_type}")
 
         # 4. 주문 실행
         if buy_signal:
@@ -745,6 +772,11 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
             try:
                 available_usd = overseas.get_order_amount()
                 print(f"    주문가능금액: ${available_usd:.2f}")
+
+                # 정찰병 매수면 scout_ratio 적용
+                if buy_type == "SCOUT":
+                    available_usd = available_usd * scout_ratio
+                    print(f"    정찰병 적용: ${available_usd:.2f} ({int(scout_ratio*100)}% 물량)")
 
                 # 최대 몇 주 살 수 있는지 계산
                 final_quantity = int(available_usd / current_price)
@@ -758,15 +790,19 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
                 print(f"    잔고 조회 실패: {e}")
                 return {"symbol": symbol, "action": "ERROR", "error": str(e)}
 
-            print(f"[5] 시장가 매수 주문... ({final_quantity}주)")
+            buy_type_label = "🔍 정찰병" if buy_type == "SCOUT" else "일반"
+            print(f"[5] 시장가 매수 주문... ({final_quantity}주, {buy_type_label})")
             try:
                 result = overseas.buy_market_order(symbol, final_quantity, exchange)
 
                 if result["success"]:
-                    msg = f"✅ [{result['mode']}] {symbol} {final_quantity}주 시장가 매수!\n주문번호: {result['order_no']}"
+                    if buy_type == "SCOUT":
+                        msg = f"🔍 [{result['mode']}] {symbol} 정찰병 매수!\n{final_quantity}주 (50% 물량)\nRSI 과매도 바겐세일 진입\n주문번호: {result['order_no']}"
+                    else:
+                        msg = f"✅ [{result['mode']}] {symbol} {final_quantity}주 시장가 매수!\n주문번호: {result['order_no']}"
                     print(f"    {msg}")
                     slack.send(msg)
-                    return {"symbol": symbol, "action": "BUY", "price": current_price, "quantity": final_quantity}
+                    return {"symbol": symbol, "action": "BUY", "buy_type": buy_type, "price": current_price, "quantity": final_quantity}
                 else:
                     msg = f"❌ {symbol} 매수 실패"
                     print(f"    {msg}")
