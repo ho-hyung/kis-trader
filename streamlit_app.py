@@ -18,8 +18,8 @@ TRADE_HISTORY_FILE = "trade_history.json"
 # 자동매매 대상 종목 (auto_trade.py와 동일)
 # ========================================
 TARGETS = [
-    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5, "trailing": "+7%→-5%", "extra": "SMA60 체크"},
-    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+5%→-3%", "extra": "RSI<70"},
+    {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5, "trailing": "+7%→-5%", "cooldown": 4, "extra": "SMA60 체크"},
+    {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+5%→-3%", "cooldown": 2, "extra": "RSI<70"},
 ]
 
 # GitHub 저장소 정보
@@ -507,11 +507,14 @@ def main():
                     else:
                         st.caption(f"📍 20일선까지: {abs(distance_to_signal):.1f}% 아래")
 
-                # 익절/손절/트레일링 라인
+                # 익절/손절/트레일링/쿨다운 라인
                 trailing = target.get("trailing", "")
+                cooldown = target.get("cooldown", 0)
                 st.caption(f"🎯 익절: +{tp}% | 🚨 손절: {sl}%")
                 if trailing:
                     st.caption(f"📉 트레일링: {trailing}")
+                if cooldown:
+                    st.caption(f"⏳ 쿨다운: {cooldown}시간")
 
                 st.markdown(f"**{signal_text}**")
 
@@ -719,8 +722,8 @@ def main():
     with col2:
         st.markdown("""
         **종목별 전략**
-        - VRT: 눌림목 + 트레일링(+7%→-5%)
-        - ORCL: 반등 + 트레일링(+5%→-3%)
+        - VRT: 눌림목, 쿨다운 4시간
+        - ORCL: 반등, 쿨다운 2시간
         """)
 
     with col3:

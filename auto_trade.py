@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 # 매매 기록 파일 경로
 TRADE_HISTORY_FILE = "trade_history.json"
 TRAILING_STOP_FILE = "trailing_stop_data.json"
+COOLDOWN_FILE = "cooldown_data.json"
 
 # ========================================
 # 설정
@@ -31,6 +32,7 @@ TARGETS = [
         "use_sma60": True,           # 60일 SMA 체크 (장기 추세 확인)
         "trailing_start": 7.0,       # +7% 도달 시 트레일링 스탑 활성화
         "trailing_stop": 5.0,        # 고점 대비 -5% 하락 시 매도 (변동성 고려)
+        "cooldown_hours": 4,         # 손절 후 4시간 재진입 금지 (변동성 큼)
     },
     {
         "symbol": "ORCL",
@@ -41,6 +43,7 @@ TARGETS = [
         "max_rsi": 70,               # RSI 70 이상이면 매수 안 함 (과매수 회피)
         "trailing_start": 5.0,       # +5% 도달 시 트레일링 스탑 활성화
         "trailing_stop": 3.0,        # 고점 대비 -3% 하락 시 매도 (노이즈 방지)
+        "cooldown_hours": 2,         # 손절 후 2시간 재진입 금지 (노이즈 대응)
     },
 ]
 
@@ -359,6 +362,76 @@ def clear_trailing_stop_data(symbol: str):
 
 
 # ========================================
+# 재진입 쿨다운 관리
+# ========================================
+def load_cooldown_data() -> dict:
+    """쿨다운 데이터 로드"""
+    try:
+        if os.path.exists(COOLDOWN_FILE):
+            with open(COOLDOWN_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[쿨다운] 데이터 로드 실패: {e}")
+    return {}
+
+
+def save_cooldown_data(data: dict):
+    """쿨다운 데이터 저장"""
+    try:
+        with open(COOLDOWN_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[쿨다운] 데이터 저장 실패: {e}")
+
+
+def set_cooldown(symbol: str, reason: str):
+    """손절/트레일링 스탑 후 쿨다운 설정"""
+    data = load_cooldown_data()
+    data[symbol] = {
+        "triggered_at": datetime.now().isoformat(),
+        "reason": reason,
+    }
+    save_cooldown_data(data)
+    print(f"[쿨다운] {symbol} 재진입 쿨다운 시작 ({reason})")
+
+
+def check_cooldown(symbol: str, cooldown_hours: int) -> tuple:
+    """
+    쿨다운 상태 확인
+    Returns:
+        (bool, str): (쿨다운 중인지, 남은 시간/사유)
+    """
+    data = load_cooldown_data()
+
+    if symbol not in data:
+        return False, ""
+
+    triggered_at = datetime.fromisoformat(data[symbol]["triggered_at"])
+    elapsed = datetime.now() - triggered_at
+    elapsed_hours = elapsed.total_seconds() / 3600
+
+    if elapsed_hours >= cooldown_hours:
+        # 쿨다운 종료 - 데이터 삭제
+        del data[symbol]
+        save_cooldown_data(data)
+        print(f"[쿨다운] {symbol} 쿨다운 종료 ({elapsed_hours:.1f}시간 경과)")
+        return False, ""
+
+    remaining_hours = cooldown_hours - elapsed_hours
+    reason = data[symbol].get("reason", "손절")
+    return True, f"⏳ 쿨다운 중: {remaining_hours:.1f}시간 남음 ({reason})"
+
+
+def clear_cooldown(symbol: str):
+    """쿨다운 데이터 수동 삭제"""
+    data = load_cooldown_data()
+    if symbol in data:
+        del data[symbol]
+        save_cooldown_data(data)
+        print(f"[쿨다운] {symbol} 쿨다운 해제")
+
+
+# ========================================
 # 매매 전략
 # ========================================
 def calculate_sma(prices: list, period: int = 20) -> float:
@@ -458,6 +531,7 @@ def get_target_config(symbol: str) -> dict:
                 "max_rsi": target.get("max_rsi", None),
                 "trailing_start": target.get("trailing_start", 5.0),
                 "trailing_stop": target.get("trailing_stop", 3.0),
+                "cooldown_hours": target.get("cooldown_hours", 2),
             }
     # 기본값 반환
     return {
@@ -469,6 +543,7 @@ def get_target_config(symbol: str) -> dict:
         "max_rsi": None,
         "trailing_start": 5.0,
         "trailing_stop": 3.0,
+        "cooldown_hours": 2,
     }
 
 
@@ -558,6 +633,10 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
 
                         # 매도 후 트레일링 데이터 삭제
                         clear_trailing_stop_data(symbol)
+
+                        # 손절/트레일링 스탑 시 쿨다운 설정 (익절은 제외)
+                        if action_type in ["STOP_LOSS", "TRAILING_STOP"]:
+                            set_cooldown(symbol, action_type)
                     else:
                         print(f"  ❌ 매도 주문 실패")
                         results.append({"symbol": symbol, "action": f"{action_type}_FAILED"})
@@ -593,6 +672,7 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
     strategy_name = "눌림목" if strategy == "pullback" else "반등"
     use_sma60 = config.get("use_sma60", False)
     max_rsi = config.get("max_rsi", None)
+    cooldown_hours = config.get("cooldown_hours", 2)
 
     print(f"\n{'='*40}")
     print(f"매수 체크: {symbol} ({exchange})")
@@ -601,7 +681,14 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
         print(f"안전장치: 60일 SMA 체크")
     if max_rsi:
         print(f"안전장치: RSI < {max_rsi}")
+    print(f"쿨다운: {cooldown_hours}시간")
     print('='*40)
+
+    # 쿨다운 체크 (손절 후 재진입 방지)
+    is_cooling, cooldown_msg = check_cooldown(symbol, cooldown_hours)
+    if is_cooling:
+        print(f"[쿨다운] {cooldown_msg}")
+        return {"symbol": symbol, "action": "SKIP", "reason": cooldown_msg}
 
     try:
         # 1. 현재가 조회
