@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 # 매매 기록 파일 경로
 TRADE_HISTORY_FILE = "trade_history.json"
+TRAILING_STOP_FILE = "trailing_stop_data.json"
 
 # ========================================
 # 설정
@@ -28,6 +29,8 @@ TARGETS = [
         "take_profit": 10.0,         # +10% 익절
         "stop_loss": -5.0,           # -5% 손절
         "use_sma60": True,           # 60일 SMA 체크 (장기 추세 확인)
+        "trailing_start": 5.0,       # +5% 도달 시 트레일링 스탑 활성화
+        "trailing_stop": 3.0,        # 고점 대비 -3% 하락 시 매도
     },
     {
         "symbol": "ORCL",
@@ -36,6 +39,8 @@ TARGETS = [
         "take_profit": 7.0,          # +7% 익절 (보수적)
         "stop_loss": -4.0,           # -4% 손절 (빠른 손절)
         "max_rsi": 70,               # RSI 70 이상이면 매수 안 함 (과매수 회피)
+        "trailing_start": 4.0,       # +4% 도달 시 트레일링 스탑 활성화
+        "trailing_stop": 2.0,        # 고점 대비 -2% 하락 시 매도
     },
 ]
 
@@ -302,6 +307,58 @@ class SlackBot:
 
 
 # ========================================
+# 트레일링 스탑 데이터 관리
+# ========================================
+def load_trailing_stop_data() -> dict:
+    """트레일링 스탑 데이터 로드 (종목별 고점 기록)"""
+    try:
+        if os.path.exists(TRAILING_STOP_FILE):
+            with open(TRAILING_STOP_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[트레일링] 데이터 로드 실패: {e}")
+    return {}
+
+
+def save_trailing_stop_data(data: dict):
+    """트레일링 스탑 데이터 저장"""
+    try:
+        with open(TRAILING_STOP_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[트레일링] 데이터 저장 실패: {e}")
+
+
+def update_high_price(symbol: str, current_price: float, avg_price: float) -> float:
+    """
+    종목별 고점 업데이트 및 반환
+    - 현재가가 기록된 고점보다 높으면 갱신
+    - 고점 기록이 없으면 평균 매수가로 초기화
+    """
+    data = load_trailing_stop_data()
+
+    if symbol not in data:
+        data[symbol] = {"high_price": avg_price, "updated_at": datetime.now().isoformat()}
+
+    # 현재가가 고점보다 높으면 갱신
+    if current_price > data[symbol]["high_price"]:
+        data[symbol]["high_price"] = current_price
+        data[symbol]["updated_at"] = datetime.now().isoformat()
+        save_trailing_stop_data(data)
+
+    return data[symbol]["high_price"]
+
+
+def clear_trailing_stop_data(symbol: str):
+    """종목 매도 시 트레일링 스탑 데이터 삭제"""
+    data = load_trailing_stop_data()
+    if symbol in data:
+        del data[symbol]
+        save_trailing_stop_data(data)
+        print(f"[트레일링] {symbol} 고점 데이터 삭제")
+
+
+# ========================================
 # 매매 전략
 # ========================================
 def calculate_sma(prices: list, period: int = 20) -> float:
@@ -399,6 +456,8 @@ def get_target_config(symbol: str) -> dict:
                 "stop_loss": target.get("stop_loss", -5.0),
                 "use_sma60": target.get("use_sma60", False),
                 "max_rsi": target.get("max_rsi", None),
+                "trailing_start": target.get("trailing_start", 5.0),
+                "trailing_stop": target.get("trailing_stop", 3.0),
             }
     # 기본값 반환
     return {
@@ -408,6 +467,8 @@ def get_target_config(symbol: str) -> dict:
         "stop_loss": -5.0,
         "use_sma60": False,
         "max_rsi": None,
+        "trailing_start": 5.0,
+        "trailing_stop": 3.0,
     }
 
 
@@ -415,9 +476,9 @@ def get_target_config(symbol: str) -> dict:
 # 익절/손절 체크
 # ========================================
 def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
-    """보유 종목 익절/손절 체크 (종목별 기준 적용)"""
+    """보유 종목 익절/손절/트레일링 스탑 체크 (종목별 기준 적용)"""
     print(f"\n{'='*40}")
-    print("익절/손절 체크")
+    print("익절/손절/트레일링 스탑 체크")
     print('='*40)
 
     results = []
@@ -441,50 +502,78 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
             take_profit = config["take_profit"]
             stop_loss = config["stop_loss"]
             exchange = config["exchange"]
+            trailing_start = config["trailing_start"]
+            trailing_stop = config["trailing_stop"]
+
+            # 고점 업데이트 및 조회
+            high_price = update_high_price(symbol, current_price, avg_price)
+            high_profit_rate = ((high_price - avg_price) / avg_price) * 100
+            drop_from_high = ((high_price - current_price) / high_price) * 100
 
             print(f"\n{symbol}: {quantity}주 | 평단가: ${avg_price:.2f} | 현재가: ${current_price:.2f} | 손익: {profit_rate:+.2f}%")
-            print(f"  기준: 익절 +{take_profit}% | 손절 {stop_loss}%")
+            print(f"  고점: ${high_price:.2f} (+{high_profit_rate:.2f}%) | 고점대비: -{drop_from_high:.2f}%")
+            print(f"  기준: 익절 +{take_profit}% | 손절 {stop_loss}% | 트레일링 +{trailing_start}% 활성화 후 -{trailing_stop}%")
 
-            # 익절 조건 확인
+            sell_reason = None
+            action_type = None
+
+            # 1. 익절 조건 확인
             if profit_rate >= take_profit:
-                print(f"  🎉 익절 조건 충족! ({profit_rate:.2f}% >= +{take_profit}%)")
+                sell_reason = f"🎉 익절 달성! ({profit_rate:.2f}% >= +{take_profit}%)"
+                action_type = "TAKE_PROFIT"
 
-                try:
-                    result = overseas.sell_market_order(symbol, quantity, exchange)
-                    if result["success"]:
-                        msg = f"🎉 익절 달성!\n{symbol} +{profit_rate:.2f}% 수익\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
-                        print(f"  {msg}")
-                        slack.send(msg)
-                        results.append({"symbol": symbol, "action": "TAKE_PROFIT", "profit_rate": profit_rate})
-                    else:
-                        print(f"  ❌ 익절 주문 실패")
-                        results.append({"symbol": symbol, "action": "TAKE_PROFIT_FAILED"})
-                except Exception as e:
-                    print(f"  ❌ 익절 주문 오류: {e}")
-                    slack.send(f"❌ {symbol} 익절 오류: {e}")
-                    results.append({"symbol": symbol, "action": "TAKE_PROFIT_ERROR", "error": str(e)})
-
-            # 손절 조건 확인
+            # 2. 손절 조건 확인
             elif profit_rate <= stop_loss:
-                print(f"  🚨 손절매 조건 충족! ({profit_rate:.2f}% <= {stop_loss}%)")
+                sell_reason = f"🚨 손절매 발동! ({profit_rate:.2f}% <= {stop_loss}%)"
+                action_type = "STOP_LOSS"
+
+            # 3. 트레일링 스탑 조건 확인
+            elif high_profit_rate >= trailing_start and drop_from_high >= trailing_stop:
+                sell_reason = f"📉 트레일링 스탑! (고점 +{high_profit_rate:.2f}%에서 -{drop_from_high:.2f}% 하락)"
+                action_type = "TRAILING_STOP"
+
+            # 매도 실행
+            if sell_reason:
+                print(f"  {sell_reason}")
 
                 try:
                     result = overseas.sell_market_order(symbol, quantity, exchange)
                     if result["success"]:
-                        msg = f"🚨 손절매 발동!\n{symbol} {profit_rate:.2f}% 하락\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+                        if action_type == "TAKE_PROFIT":
+                            msg = f"🎉 익절 달성!\n{symbol} +{profit_rate:.2f}% 수익\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+                        elif action_type == "STOP_LOSS":
+                            msg = f"🚨 손절매 발동!\n{symbol} {profit_rate:.2f}% 하락\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+                        else:  # TRAILING_STOP
+                            msg = f"📉 트레일링 스탑!\n{symbol} 고점 대비 -{drop_from_high:.2f}% 하락\n현재 수익률: {profit_rate:+.2f}%\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+
                         print(f"  {msg}")
                         slack.send(msg)
-                        results.append({"symbol": symbol, "action": "STOP_LOSS", "profit_rate": profit_rate})
+                        results.append({
+                            "symbol": symbol,
+                            "action": action_type,
+                            "profit_rate": profit_rate,
+                            "price": current_price,
+                            "quantity": quantity,
+                        })
+
+                        # 매도 후 트레일링 데이터 삭제
+                        clear_trailing_stop_data(symbol)
                     else:
-                        print(f"  ❌ 손절매 주문 실패")
-                        results.append({"symbol": symbol, "action": "STOP_LOSS_FAILED"})
+                        print(f"  ❌ 매도 주문 실패")
+                        results.append({"symbol": symbol, "action": f"{action_type}_FAILED"})
+
                 except Exception as e:
-                    print(f"  ❌ 손절매 주문 오류: {e}")
-                    slack.send(f"❌ {symbol} 손절매 오류: {e}")
-                    results.append({"symbol": symbol, "action": "STOP_LOSS_ERROR", "error": str(e)})
+                    print(f"  ❌ 매도 주문 오류: {e}")
+                    slack.send(f"❌ {symbol} 매도 오류: {e}")
+                    results.append({"symbol": symbol, "action": f"{action_type}_ERROR", "error": str(e)})
 
             else:
-                print(f"  ⏳ 홀딩 중 (손절 {stop_loss}% < 현재 {profit_rate:+.2f}% < 익절 +{take_profit}%)")
+                # 트레일링 활성화 상태 표시
+                if high_profit_rate >= trailing_start:
+                    print(f"  🔔 트레일링 스탑 활성화 중 (고점 +{high_profit_rate:.2f}%)")
+                    print(f"     → 고점 대비 -{trailing_stop}% 하락 시 매도 (현재 -{drop_from_high:.2f}%)")
+                else:
+                    print(f"  ⏳ 홀딩 중 (트레일링 활성화까지 +{trailing_start - profit_rate:.2f}% 남음)")
 
     except Exception as e:
         print(f"[ERROR] 익절/손절 체크 오류: {e}")
@@ -630,7 +719,7 @@ def save_trade_history(results: list):
         # 새 기록 추가
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for result in results:
-            if result.get("action") in ["BUY", "TAKE_PROFIT", "STOP_LOSS"]:
+            if result.get("action") in ["BUY", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"]:
                 record = {
                     "timestamp": timestamp,
                     "symbol": result.get("symbol"),
