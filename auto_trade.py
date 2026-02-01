@@ -626,8 +626,17 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
             print("보유 종목 없음")
             return results
 
+        # TARGETS에 있는 종목 심볼 목록
+        target_symbols = [t["symbol"] for t in TARGETS]
+
         for holding in holdings:
             symbol = holding["symbol"]
+
+            # TARGETS에 없는 종목은 건너뛰기 (수동 관리)
+            if symbol not in target_symbols:
+                print(f"\n{symbol}: TARGETS에 없음 - 수동 관리 (건너뜀)")
+                continue
+
             quantity = holding["quantity"]
             avg_price = holding["avg_price"]
             current_price = holding["current_price"]
