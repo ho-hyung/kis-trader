@@ -435,19 +435,36 @@ def main():
         return
 
     # ========================================
-    # 1. 주문가능금액
+    # 1. 계좌 현황
     # ========================================
-    st.subheader("💰 주문가능금액")
+    st.subheader("💰 계좌 현황")
     exchange_rate = 0
     try:
         amount = overseas.get_order_amount()
         exchange_rate = amount['exchange_rate']
-        col1, col2, col3 = st.columns(3)
-        col1.metric("달러", f"${amount['usd']:.2f}")
-        col2.metric("원화", f"{amount['krw']:,.0f}원")
-        col3.metric("환율", f"{exchange_rate:,.2f}원/$")
+
+        # 보유 주식 평가액 계산
+        holdings_value = 0
+        try:
+            balance = overseas.get_balance()
+            for h in balance["holdings"]:
+                holdings_value += h["current_price"] * h["quantity"]
+        except Exception:
+            pass
+
+        total_value = amount['usd'] + holdings_value
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("주문가능", f"${amount['usd']:.2f}")
+        col2.metric("보유주식", f"${holdings_value:.2f}")
+        col3.metric("총 자산", f"${total_value:.2f}")
+        col4.metric("환율", f"{exchange_rate:,.0f}원/$")
+
+        # 원화 환산
+        st.caption(f"💵 총 자산: {total_value * exchange_rate:,.0f}원 (주문가능 {amount['usd'] * exchange_rate:,.0f}원 + 보유주식 {holdings_value * exchange_rate:,.0f}원)")
+
     except Exception as e:
-        st.error(f"주문가능금액 조회 실패: {e}")
+        st.error(f"계좌 조회 실패: {e}")
 
     st.markdown("---")
 
