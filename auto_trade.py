@@ -9,6 +9,7 @@ GitHub Actions에서 정기 실행
 
 import os
 import json
+import time
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ TRADE_HISTORY_FILE = "trade_history.json"
 TRAILING_STOP_FILE = "trailing_stop_data.json"
 COOLDOWN_FILE = "cooldown_data.json"
 SETTINGS_FILE = "user_settings.json"
+TOKEN_CACHE_FILE = "token_cache.json"
 
 # ========================================
 # 설정
@@ -70,6 +72,7 @@ def get_env(key: str, default: str = None) -> str:
 # ========================================
 class KisAuth:
     BASE_URL = "https://openapi.koreainvestment.com:9443"
+    TOKEN_VALID_HOURS = 12  # 토큰 유효 시간 (KIS API 토큰은 24시간 유효, 안전하게 12시간으로 설정)
 
     def __init__(self):
         self.app_key = get_env("KIS_APP_KEY")
@@ -81,7 +84,63 @@ class KisAuth:
         if not self.app_key or not self.app_secret:
             raise ValueError("KIS_APP_KEY and KIS_APP_SECRET are required")
 
-    def get_access_token(self) -> str:
+    def _get_app_key_signature(self) -> str:
+        """앱 키의 앞 8자리로 간단한 시그니처 생성"""
+        return self.app_key[:8] if self.app_key else ""
+
+    def _load_cached_token(self) -> str:
+        """캐시된 토큰 로드 (유효한 경우에만)"""
+        try:
+            if os.path.exists(TOKEN_CACHE_FILE):
+                with open(TOKEN_CACHE_FILE, "r") as f:
+                    cache = json.load(f)
+
+                # 유효 시간 확인
+                cached_at = datetime.fromisoformat(cache.get("cached_at", ""))
+                elapsed_hours = (datetime.now() - cached_at).total_seconds() / 3600
+
+                if elapsed_hours < self.TOKEN_VALID_HOURS:
+                    # 캐시된 토큰이 같은 앱 키에 대한 것인지 확인
+                    if cache.get("app_key_sig") == self._get_app_key_signature():
+                        print(f"[인증] 캐시된 토큰 사용 ({elapsed_hours:.1f}시간 경과)")
+                        return cache.get("access_token")
+                    else:
+                        print("[인증] 앱 키가 변경됨 - 새 토큰 발급 필요")
+                else:
+                    print(f"[인증] 캐시된 토큰 만료 ({elapsed_hours:.1f}시간 경과)")
+        except Exception as e:
+            print(f"[인증] 캐시 로드 실패: {e}")
+        return None
+
+    def _save_token_cache(self, token: str):
+        """토큰 캐시 저장"""
+        try:
+            cache = {
+                "access_token": token,
+                "cached_at": datetime.now().isoformat(),
+                "app_key_sig": self._get_app_key_signature(),
+            }
+            with open(TOKEN_CACHE_FILE, "w") as f:
+                json.dump(cache, f, indent=2)
+            print("[인증] 토큰 캐시 저장 완료")
+        except Exception as e:
+            print(f"[인증] 캐시 저장 실패: {e}")
+
+    def get_access_token(self, max_retries: int = 3, force_refresh: bool = False) -> str:
+        """
+        토큰 발급 (캐싱 + 재시도 로직 포함)
+        - 캐시된 토큰이 유효하면 재사용
+        - 403 오류 시 지수 백오프로 재시도
+        - GitHub Actions IP 차단 대응
+        """
+        # 1. 캐시된 토큰 확인 (강제 갱신이 아닌 경우)
+        if not force_refresh:
+            cached_token = self._load_cached_token()
+            if cached_token:
+                self.access_token = cached_token
+                return self.access_token
+
+        # 2. 새 토큰 발급
         url = f"{self.BASE_URL}/oauth2/tokenP"
         body = {
             "grant_type": "client_credentials",
@@ -89,15 +148,42 @@ class KisAuth:
             "appsecret": self.app_secret,
         }
 
-        response = requests.post(url, json=body, timeout=10)
-        response.raise_for_status()
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(url, json=body, timeout=15)
 
-        data = response.json()
-        self.access_token = data.get("access_token")
-        if not self.access_token:
-            raise ValueError(f"Token error: {data}")
+                # 403 오류 시 재시도
+                if response.status_code == 403:
+                    last_error = f"403 Forbidden (attempt {attempt + 1})"
+                    wait_time = (2 ** attempt) * 5  # 5초, 10초, 20초
+                    print(f"[인증] 403 오류 발생, {wait_time}초 후 재시도... ({attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
 
-        return self.access_token
+                response.raise_for_status()
+
+                data = response.json()
+                self.access_token = data.get("access_token")
+                if not self.access_token:
+                    raise ValueError(f"Token error: {data}")
+
+                if attempt > 0:
+                    print(f"[인증] {attempt + 1}번째 시도에서 성공")
+
+                # 토큰 캐시 저장
+                self._save_token_cache(self.access_token)
+
+                return self.access_token
+
+            except requests.exceptions.HTTPError as e:
+                last_error = str(e)
+                # 403 외의 오류는 즉시 raise
+                if response.status_code != 403:
+                    raise
+
+        # 모든 재시도 실패
+        raise ValueError(f"토큰 발급 실패 ({max_retries}회 재시도 후): {last_error}")
 
     def get_auth_headers(self, tr_id: str) -> dict:
         return {
@@ -235,14 +321,18 @@ class KisOverseas:
         return holdings
 
     def get_order_amount(self) -> float:
-        """주문가능금액(USD) 조회"""
+        """
+        주문가능금액(USD) 조회
+        - 외화잔고 기반으로 주문 가능한 금액 반환
+        - 여러 필드를 확인하여 가장 적절한 값 사용
+        """
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
         headers = self.auth.get_auth_headers("TTTS3007R")
         params = {
             "CANO": self.auth.account_number,
             "ACNT_PRDT_CD": self.auth.account_product_code,
             "OVRS_EXCG_CD": "NASD",
-            "OVRS_ORD_UNPR": "1",
+            "OVRS_ORD_UNPR": "100",  # 가상 주문단가 (더 정확한 계산용)
             "ITEM_CD": "",
         }
 
@@ -250,8 +340,128 @@ class KisOverseas:
         response.raise_for_status()
         data = response.json()
 
+        # API 응답 상태 확인
+        if data.get("rt_cd") != "0":
+            print(f"[잔고] API 오류: {data.get('msg1')}")
+            # 대체 방법: 외화잔고 직접 조회
+            return self._get_foreign_balance()
+
         output = data.get("output", {})
-        return float(output.get("frcr_ord_psbl_amt1", 0) or 0)
+
+        # 여러 필드 시도 (KIS API 버전에 따라 다를 수 있음)
+        amount_fields = [
+            "frcr_ord_psbl_amt1",  # 외화주문가능금액1
+            "ord_psbl_frcr_amt",   # 주문가능외화금액
+            "frcr_ord_psbl_amt",   # 외화주문가능금액
+            "ovrs_ord_psbl_amt",   # 해외주문가능금액
+        ]
+
+        for field in amount_fields:
+            value = output.get(field)
+            if value:
+                amount = float(value)
+                if amount > 0:
+                    return amount
+
+        # 모든 필드가 0이면 외화잔고 직접 조회
+        print("[잔고] 주문가능금액 0원 - 외화잔고 직접 조회 시도")
+        return self._get_foreign_balance()
+
+    def _get_foreign_balance(self) -> float:
+        """
+        외화 예수금 조회 (해외주식 주문가능 현금)
+        - inquire-present-balance 엔드포인트 사용
+        """
+        # 방법 1: 해외주식 예수금 조회
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-present-balance"
+        headers = self.auth.get_auth_headers("CTRP6504R")
+        params = {
+            "CANO": self.auth.account_number,
+            "ACNT_PRDT_CD": self.auth.account_product_code,
+            "WCRC_FRCR_DVSN_CD": "02",  # 02: 외화
+            "NATN_CD": "840",           # 840: 미국
+            "TR_MKET_CD": "00",         # 00: 전체
+            "INQR_DVSN_CD": "00",       # 00: 전체
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("rt_cd") == "0":
+                output2 = data.get("output2", {})
+                if isinstance(output2, list) and output2:
+                    output2 = output2[0]
+
+                # 외화 예수금 필드들
+                balance_fields = [
+                    "frcr_dncl_amt_2",   # 외화예수금2
+                    "frcr_drwg_psbl_amt_1",  # 외화출금가능금액1
+                    "frcr_use_psbl_amt", # 외화사용가능금액
+                    "ovrs_ord_psbl_amt", # 해외주문가능금액
+                ]
+
+                for field in balance_fields:
+                    value = output2.get(field)
+                    if value:
+                        amount = float(value)
+                        if amount > 0:
+                            print(f"[잔고] 예수금 확인: ${amount:.2f} ({field})")
+                            return amount
+
+        except Exception as e:
+            print(f"[잔고] 예수금 조회 실패: {e}")
+
+        # 방법 2: 기존 balance API에서 다시 시도
+        return self._get_balance_from_holdings_api()
+
+    def _get_balance_from_holdings_api(self) -> float:
+        """보유잔고 API에서 외화 정보 추출"""
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+        headers = self.auth.get_auth_headers("TTTS3012R")
+        params = {
+            "CANO": self.auth.account_number,
+            "ACNT_PRDT_CD": self.auth.account_product_code,
+            "OVRS_EXCG_CD": "NASD",
+            "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            output2 = data.get("output2", {})
+            if isinstance(output2, list) and output2:
+                output2 = output2[0]
+
+            # 다양한 외화 관련 필드 시도
+            balance_fields = [
+                "frcr_evlu_amt2",        # 외화평가금액2
+                "frcr_dncl_amt_2",       # 외화예수금2
+                "frcr_drwg_psbl_amt",    # 외화출금가능금액
+                "ovrs_stck_evlu_amt",    # 해외주식평가금액
+                "tot_evlu_pfls_amt",     # 총평가손익금액
+            ]
+
+            for field in balance_fields:
+                value = output2.get(field)
+                if value:
+                    amount = float(value)
+                    if amount > 0:
+                        print(f"[잔고] {field}에서 ${amount:.2f} 확인")
+                        return amount
+
+            # 디버깅용 - 전체 output2 출력
+            print(f"[잔고] output2 전체: {list(output2.keys()) if output2 else 'empty'}")
+            return 0.0
+
+        except Exception as e:
+            print(f"[잔고] 보유잔고 API 조회 실패: {e}")
+            return 0.0
 
     def sell_market_order(self, symbol: str, quantity: int, exchange: str = "NAS") -> dict:
         """시장가 매도 (손절매용)"""
