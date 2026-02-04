@@ -267,13 +267,27 @@ class KisOverseas:
 
         return prices
 
-    def buy_market_order(self, symbol: str, quantity: int, exchange: str = "NYS") -> dict:
-        """시장가 매수"""
+    def buy_market_order(self, symbol: str, quantity: int, exchange: str = "NYS", current_price: float = None) -> dict:
+        """
+        매수 주문 (시장가 또는 지정가)
+        - current_price가 있으면: 현재가 +1% 지정가 주문 (시장가 대체)
+        - current_price가 없으면: 시장가 주문 시도
+        """
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
         tr_id = "TTTT1002U"  # 실전투자 해외매수
 
         exchange_map = {"NYS": "NYSE", "NAS": "NASD", "AMS": "AMEX"}
         headers = self.auth.get_auth_headers(tr_id)
+
+        # 시장가 주문이 거부될 수 있으므로 현재가 +1% 지정가로 주문
+        if current_price and current_price > 0:
+            # 현재가 +1% 지정가 (소수점 2자리)
+            limit_price = round(current_price * 1.01, 2)
+            order_price = str(limit_price)
+            order_type = "지정가"
+        else:
+            order_price = "0"
+            order_type = "시장가"
 
         body = {
             "CANO": self.auth.account_number,
@@ -281,7 +295,7 @@ class KisOverseas:
             "OVRS_EXCG_CD": exchange_map.get(exchange, "NYSE"),
             "PDNO": symbol,
             "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": "0",  # 시장가
+            "OVRS_ORD_UNPR": order_price,
             "ORD_SVR_DVSN_CD": "0",
             "ORD_DVSN": "00",
         }
@@ -291,8 +305,11 @@ class KisOverseas:
                 "success": True,
                 "mode": "simulation",
                 "order_no": "VIRTUAL",
+                "order_type": order_type,
+                "order_price": order_price,
             }
 
+        print(f"    주문: {order_type} ${order_price}")
         response = requests.post(url, headers=headers, json=body, timeout=10)
         response.raise_for_status()
 
@@ -304,6 +321,8 @@ class KisOverseas:
             "success": True,
             "mode": "real",
             "order_no": data.get("output", {}).get("ODNO"),
+            "order_type": order_type,
+            "order_price": order_price,
         }
 
     def get_holdings(self) -> list:
@@ -479,13 +498,27 @@ class KisOverseas:
             print(f"[잔고] 보유잔고 API 조회 실패: {e}")
             return 0.0
 
-    def sell_market_order(self, symbol: str, quantity: int, exchange: str = "NAS") -> dict:
-        """시장가 매도 (손절매용)"""
+    def sell_market_order(self, symbol: str, quantity: int, exchange: str = "NAS", current_price: float = None) -> dict:
+        """
+        매도 주문 (시장가 또는 지정가)
+        - current_price가 있으면: 현재가 -1% 지정가 주문 (빠른 체결 보장)
+        - current_price가 없으면: 시장가 주문 시도
+        """
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
         tr_id = "TTTT1006U"  # 실전투자 해외매도
 
         exchange_map = {"NYS": "NYSE", "NAS": "NASD", "AMS": "AMEX"}
         headers = self.auth.get_auth_headers(tr_id)
+
+        # 시장가 주문이 거부될 수 있으므로 현재가 -1% 지정가로 주문
+        if current_price and current_price > 0:
+            # 현재가 -1% 지정가 (빠른 체결 위해)
+            limit_price = round(current_price * 0.99, 2)
+            order_price = str(limit_price)
+            order_type = "지정가"
+        else:
+            order_price = "0"
+            order_type = "시장가"
 
         body = {
             "CANO": self.auth.account_number,
@@ -493,7 +526,7 @@ class KisOverseas:
             "OVRS_EXCG_CD": exchange_map.get(exchange, "NASD"),
             "PDNO": symbol,
             "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": "0",  # 시장가
+            "OVRS_ORD_UNPR": order_price,
             "ORD_SVR_DVSN_CD": "0",
             "ORD_DVSN": "00",
         }
@@ -503,8 +536,11 @@ class KisOverseas:
                 "success": True,
                 "mode": "simulation",
                 "order_no": "VIRTUAL_SELL",
+                "order_type": order_type,
+                "order_price": order_price,
             }
 
+        print(f"    매도 주문: {order_type} ${order_price}")
         response = requests.post(url, headers=headers, json=body, timeout=10)
         response.raise_for_status()
 
@@ -516,6 +552,8 @@ class KisOverseas:
             "success": True,
             "mode": "real",
             "order_no": data.get("output", {}).get("ODNO"),
+            "order_type": order_type,
+            "order_price": order_price,
         }
 
 
@@ -913,14 +951,15 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
                 print(f"  {sell_reason}")
 
                 try:
-                    result = overseas.sell_market_order(symbol, quantity, exchange)
+                    result = overseas.sell_market_order(symbol, quantity, exchange, current_price)
                     if result["success"]:
+                        order_info = f"{result.get('order_type', '시장가')} ${result.get('order_price', '0')}"
                         if action_type == "TAKE_PROFIT":
-                            msg = f"🎉 익절 달성!\n{symbol} +{profit_rate:.2f}% 수익\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+                            msg = f"🎉 익절 달성!\n{symbol} +{profit_rate:.2f}% 수익\n{quantity}주 전량 매도\n{order_info}\n주문번호: {result['order_no']}"
                         elif action_type == "STOP_LOSS":
-                            msg = f"🚨 손절매 발동!\n{symbol} {profit_rate:.2f}% 하락\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+                            msg = f"🚨 손절매 발동!\n{symbol} {profit_rate:.2f}% 하락\n{quantity}주 전량 매도\n{order_info}\n주문번호: {result['order_no']}"
                         else:  # TRAILING_STOP
-                            msg = f"📉 트레일링 스탑!\n{symbol} 고점 대비 -{drop_from_high:.2f}% 하락\n현재 수익률: {profit_rate:+.2f}%\n{quantity}주 전량 매도\n주문번호: {result['order_no']}"
+                            msg = f"📉 트레일링 스탑!\n{symbol} 고점 대비 -{drop_from_high:.2f}% 하락\n현재 수익률: {profit_rate:+.2f}%\n{quantity}주 전량 매도\n{order_info}\n주문번호: {result['order_no']}"
 
                         print(f"  {msg}")
                         slack.send(msg)
@@ -1112,15 +1151,16 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
                 return {"symbol": symbol, "action": "ERROR", "error": str(e)}
 
             buy_type_label = "🔍 정찰병" if buy_type == "SCOUT" else "일반"
-            print(f"[5] 시장가 매수 주문... ({final_quantity}주, {buy_type_label})")
+            print(f"[5] 매수 주문... ({final_quantity}주, {buy_type_label})")
             try:
-                result = overseas.buy_market_order(symbol, final_quantity, exchange)
+                result = overseas.buy_market_order(symbol, final_quantity, exchange, current_price)
 
                 if result["success"]:
+                    order_info = f"{result.get('order_type', '시장가')} ${result.get('order_price', '0')}"
                     if buy_type == "SCOUT":
-                        msg = f"🔍 [{result['mode']}] {symbol} 정찰병 매수!\n{final_quantity}주 (50% 물량)\nRSI 과매도 바겐세일 진입\n주문번호: {result['order_no']}"
+                        msg = f"🔍 [{result['mode']}] {symbol} 정찰병 매수!\n{final_quantity}주 (50% 물량)\n{order_info}\n주문번호: {result['order_no']}"
                     else:
-                        msg = f"✅ [{result['mode']}] {symbol} {final_quantity}주 시장가 매수!\n주문번호: {result['order_no']}"
+                        msg = f"✅ [{result['mode']}] {symbol} {final_quantity}주 매수!\n{order_info}\n주문번호: {result['order_no']}"
                     print(f"    {msg}")
                     slack.send(msg)
                     return {"symbol": symbol, "action": "BUY", "buy_type": buy_type, "price": current_price, "quantity": final_quantity}
