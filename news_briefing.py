@@ -18,6 +18,7 @@ SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 BRIEFING_TARGETS = [
     {"symbol": "VRT", "name": "Vertiv Holdings", "name_kr": "버티브"},
     {"symbol": "ORCL", "name": "Oracle", "name_kr": "오라클"},
+    {"symbol": "RKLB", "name": "Rocket Lab", "name_kr": "로켓랩"},
 ]
 
 
