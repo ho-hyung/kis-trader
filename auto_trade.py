@@ -52,6 +52,17 @@ TARGETS = [
         "scout_rsi": 14,             # RSI 14 미만이면 정찰병 투입 (극단적 과매도)
         "scout_ratio": 0.5,          # 정찰병은 50% 물량
     },
+    {
+        "symbol": "RKLB",
+        "exchange": "NAS",
+        "strategy": "pullback",      # 눌림목 매수 (단기 조정 시 진입)
+        "take_profit": 15.0,         # +15% 익절 (높은 변동성)
+        "stop_loss": -8.0,           # -8% 손절 (변동성 고려)
+        "use_sma60": True,           # 60일 SMA 체크 (장기 추세 확인 필수)
+        "trailing_start": 10.0,      # +10% 도달 시 트레일링 시작
+        "trailing_stop": 7.0,        # 고점 대비 -7% 하락 시 매도
+        "cooldown_hours": 6,         # 변동성 높아 긴 쿨다운
+    },
 ]
 
 IS_REAL_TRADING = True  # 실제 주문 활성화
