@@ -21,7 +21,7 @@ SETTINGS_FILE = "user_settings.json"
 TARGETS = [
     {"symbol": "VRT", "exchange": "NYS", "name": "Vertiv Holdings", "strategy": "pullback", "tp": 10, "sl": -5, "trailing": "+7%→-5%", "cooldown": 4, "extra": "SMA60 체크"},
     {"symbol": "ORCL", "exchange": "NYS", "name": "Oracle", "strategy": "breakout", "tp": 7, "sl": -4, "trailing": "+5%→-3%", "cooldown": 2, "extra": "RSI<70", "scout": "RSI<14 시 50%"},
-    {"symbol": "RKLB", "exchange": "NAS", "name": "Rocket Lab", "strategy": "pullback", "tp": 15, "sl": -8, "trailing": "+10%→-7%", "cooldown": 6, "extra": "SMA60 체크"},
+    {"symbol": "RKLB", "exchange": "NAS", "name": "Rocket Lab", "strategy": "pullback", "tp": 15, "sl": -8, "trailing": "+10%→-7%", "cooldown": 2, "extra": "SMA60 체크, 03시+저가"},
 ]
 
 # GitHub 저장소 정보
@@ -791,7 +791,7 @@ def main():
         **종목별 전략**
         - VRT: 눌림목, 쿨다운 4시간
         - ORCL: 반등, 쿨다운 2시간
-        - RKLB: 눌림목, 쿨다운 6시간
+        - RKLB: 눌림목, 쿨다운 2시간
         """)
 
     with col3:

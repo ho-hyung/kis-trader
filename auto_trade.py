@@ -61,7 +61,7 @@ TARGETS = [
         "use_sma60": True,           # 60일 SMA 체크 (장기 추세 확인 필수)
         "trailing_start": 10.0,      # +10% 도달 시 트레일링 시작
         "trailing_stop": 7.0,        # 고점 대비 -7% 하락 시 매도
-        "cooldown_hours": 6,         # 변동성 높아 긴 쿨다운
+        "cooldown_hours": 2,         # 2시간 쿨다운 (당일 재시도 가능)
         # 저가 매수 전략 (장중 하한가 근처에서만 매수)
         "buy_after_hour": 3,         # KST 03시 이후에만 매수 (장 후반)
         "buy_near_low_pct": 2.0,     # 당일 저가 대비 +2% 이내일 때만 매수
