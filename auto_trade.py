@@ -62,6 +62,9 @@ TARGETS = [
         "trailing_start": 10.0,      # +10% 도달 시 트레일링 시작
         "trailing_stop": 7.0,        # 고점 대비 -7% 하락 시 매도
         "cooldown_hours": 6,         # 변동성 높아 긴 쿨다운
+        # 저가 매수 전략 (장중 하한가 근처에서만 매수)
+        "buy_after_hour": 3,         # KST 03시 이후에만 매수 (장 후반)
+        "buy_near_low_pct": 2.0,     # 당일 저가 대비 +2% 이내일 때만 매수
     },
 ]
 
@@ -212,7 +215,7 @@ class KisOverseas:
         self.base_url = auth.BASE_URL
 
     def get_current_price(self, symbol: str, exchange: str = "NYS") -> dict:
-        """현재가 조회"""
+        """현재가 조회 (당일 고가/저가 포함)"""
         url = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
         headers = self.auth.get_auth_headers("HHDFS00000300")
         params = {"AUTH": "", "EXCD": exchange, "SYMB": symbol}
@@ -228,6 +231,8 @@ class KisOverseas:
         return {
             "price": float(output.get("last", 0) or 0),
             "change_rate": float(output.get("rate", 0) or 0),
+            "high": float(output.get("high", 0) or 0),  # 당일 고가
+            "low": float(output.get("low", 0) or 0),    # 당일 저가
         }
 
     def get_daily_prices(self, symbol: str, exchange: str = "NYS", days: int = 20) -> list:
@@ -800,6 +805,9 @@ def get_target_config(symbol: str) -> dict:
                 "scout_enabled": target.get("scout_enabled", False),
                 "scout_rsi": target.get("scout_rsi", 35),
                 "scout_ratio": target.get("scout_ratio", 0.5),
+                # 저가 매수 전략
+                "buy_after_hour": target.get("buy_after_hour", None),  # KST 기준 시간
+                "buy_near_low_pct": target.get("buy_near_low_pct", None),  # 당일 저가 대비 %
             }
             break
 
@@ -818,6 +826,8 @@ def get_target_config(symbol: str) -> dict:
             "scout_enabled": False,
             "scout_rsi": 35,
             "scout_ratio": 0.5,
+            "buy_after_hour": None,
+            "buy_near_low_pct": None,
         }
 
     # 사용자 설정 오버라이드 (대시보드에서 변경한 설정)
@@ -964,6 +974,8 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
     use_sma60 = config.get("use_sma60", False)
     max_rsi = config.get("max_rsi", None)
     cooldown_hours = config.get("cooldown_hours", 2)
+    buy_after_hour = config.get("buy_after_hour", None)
+    buy_near_low_pct = config.get("buy_near_low_pct", None)
 
     print(f"\n{'='*40}")
     print(f"매수 체크: {symbol} ({exchange})")
@@ -972,6 +984,10 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
         print(f"안전장치: 60일 SMA 체크")
     if max_rsi:
         print(f"안전장치: RSI < {max_rsi}")
+    if buy_after_hour:
+        print(f"저가매수: KST {buy_after_hour}시 이후")
+    if buy_near_low_pct:
+        print(f"저가매수: 당일 저가 +{buy_near_low_pct}% 이내")
     print(f"쿨다운: {cooldown_hours}시간")
     print('='*40)
 
@@ -981,12 +997,42 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
         print(f"[쿨다운] {cooldown_msg}")
         return {"symbol": symbol, "action": "SKIP", "reason": cooldown_msg}
 
+    # 저가 매수 시간 체크 (KST 기준)
+    if buy_after_hour is not None:
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        now_kst = datetime.now(KST)
+        current_hour = now_kst.hour
+
+        if current_hour < buy_after_hour:
+            reason = f"⏰ 장 후반 대기 중 (현재 KST {current_hour}시, {buy_after_hour}시 이후 매수)"
+            print(f"[저가매수] {reason}")
+            return {"symbol": symbol, "action": "SKIP", "reason": reason}
+        else:
+            print(f"[저가매수] 시간 조건 충족 (KST {current_hour}시 >= {buy_after_hour}시)")
+
     try:
         # 1. 현재가 조회
         print(f"[1] 현재가 조회...")
         price_info = overseas.get_current_price(symbol, exchange)
         current_price = price_info["price"]
+        daily_low = price_info.get("low", 0)
+        daily_high = price_info.get("high", 0)
         print(f"    현재가: ${current_price:.2f}")
+        if daily_low > 0:
+            print(f"    당일 저가: ${daily_low:.2f} / 고가: ${daily_high:.2f}")
+
+        # 저가 근처 체크
+        if buy_near_low_pct is not None and daily_low > 0:
+            price_from_low_pct = ((current_price - daily_low) / daily_low) * 100
+            threshold = buy_near_low_pct
+
+            if price_from_low_pct > threshold:
+                reason = f"📈 저가 대비 +{price_from_low_pct:.1f}% (기준: +{threshold}% 이내)"
+                print(f"[저가매수] {reason} - 대기")
+                return {"symbol": symbol, "action": "SKIP", "reason": reason}
+            else:
+                print(f"[저가매수] 저가 근처 확인 (+{price_from_low_pct:.1f}% <= +{threshold}%)")
 
         # 2. 이동평균 및 RSI 계산 (필요한 만큼 데이터 조회)
         days_needed = 60 if use_sma60 else 20
