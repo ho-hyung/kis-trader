@@ -65,6 +65,7 @@ TARGETS = [
         # 저가 매수 전략 (장중 하한가 근처에서만 매수)
         "buy_after_hour": 3,         # KST 03시 이후에만 매수 (장 후반)
         "buy_near_low_pct": 2.0,     # 당일 저가 대비 +2% 이내일 때만 매수
+        "max_quantity": 1,           # 테스트용: 최대 1주만 매수
     },
 ]
 
@@ -846,6 +847,7 @@ def get_target_config(symbol: str) -> dict:
                 # 저가 매수 전략
                 "buy_after_hour": target.get("buy_after_hour", None),  # KST 기준 시간
                 "buy_near_low_pct": target.get("buy_near_low_pct", None),  # 당일 저가 대비 %
+                "max_quantity": target.get("max_quantity", None),  # 최대 매수 수량 제한
             }
             break
 
@@ -866,6 +868,7 @@ def get_target_config(symbol: str) -> dict:
             "scout_ratio": 0.5,
             "buy_after_hour": None,
             "buy_near_low_pct": None,
+            "max_quantity": None,
         }
 
     # 사용자 설정 오버라이드 (대시보드에서 변경한 설정)
@@ -1141,6 +1144,12 @@ def process_buy(overseas: KisOverseas, slack: SlackBot, symbol: str, exchange: s
                 # 최대 몇 주 살 수 있는지 계산
                 final_quantity = int(available_usd / current_price)
                 print(f"    계산: ${available_usd:.2f} / ${current_price:.2f} = {final_quantity}주 가능")
+
+                # 최대 수량 제한 적용
+                max_quantity = config.get("max_quantity")
+                if max_quantity and final_quantity > max_quantity:
+                    print(f"    최대 수량 제한: {final_quantity}주 → {max_quantity}주")
+                    final_quantity = max_quantity
 
                 if final_quantity < 1:
                     print(f"    💸 잔고 부족으로 매수 불가 (최소 1주 필요: ${current_price:.2f})")
