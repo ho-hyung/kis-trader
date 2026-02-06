@@ -854,7 +854,7 @@ def main():
 
     # 종목별 자동매매 ON/OFF
     st.markdown("**종목별 자동매매 ON/OFF**")
-    st.caption("OFF 시 매수만 중단됩니다. 보유 종목의 익절/손절은 계속 동작합니다.")
+    st.caption("OFF 시 매수/익절/손절 모두 중단됩니다.")
 
     toggle_cols = st.columns(len(TARGETS))
     for idx, target in enumerate(TARGETS):
