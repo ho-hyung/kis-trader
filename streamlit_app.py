@@ -506,21 +506,6 @@ def main():
             sl = target["sl"]
             extra = target.get("extra", "")
 
-            # 종목별 자동매매 토글
-            current_enabled = get_trading_enabled(symbol)
-            new_enabled = st.toggle(
-                f"자동매매",
-                value=current_enabled,
-                key=f"{symbol}_trading_toggle",
-            )
-            if new_enabled != current_enabled:
-                set_trading_enabled(symbol, new_enabled)
-                st.rerun()
-
-            if not current_enabled:
-                st.warning(f"**{symbol}** - {name} (자동매매 OFF)")
-                st.caption("매수 비활성화 (익절/손절은 동작)")
-
             try:
                 # 현재가 조회
                 price_info = overseas.get_current_price(symbol, exchange)
@@ -867,23 +852,46 @@ def main():
     # ========================================
     st.subheader("⚙️ 전략 설정")
 
+    # 종목별 자동매매 ON/OFF
+    st.markdown("**종목별 자동매매 ON/OFF**")
+    st.caption("OFF 시 매수만 중단됩니다. 보유 종목의 익절/손절은 계속 동작합니다.")
+
+    toggle_cols = st.columns(len(TARGETS))
+    for idx, target in enumerate(TARGETS):
+        with toggle_cols[idx]:
+            symbol = target["symbol"]
+            name = target["name"]
+            current_enabled = get_trading_enabled(symbol)
+            new_enabled = st.toggle(
+                f"{symbol} ({name})",
+                value=current_enabled,
+                key=f"{symbol}_trading_toggle",
+            )
+            if new_enabled != current_enabled:
+                set_trading_enabled(symbol, new_enabled)
+                if new_enabled:
+                    st.success(f"✅ {symbol} 자동매매 활성화")
+                else:
+                    st.warning(f"⏸️ {symbol} 자동매매 비활성화")
+                st.rerun()
+
+    st.markdown("")
+
+    # ORCL 정찰병 설정
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown("**ORCL 정찰병 매수**")
         st.caption("RSI < 35 시 50% 물량 선진입")
 
-        # 현재 설정 로드
         current_scout = get_scout_enabled("ORCL")
 
-        # 토글 스위치
         new_scout = st.toggle(
             "정찰병 매수 활성화",
             value=current_scout,
             key="orcl_scout_toggle"
         )
 
-        # 설정 변경 감지 및 저장
         if new_scout != current_scout:
             set_scout_enabled("ORCL", new_scout)
             if new_scout:
