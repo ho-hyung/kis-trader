@@ -377,6 +377,23 @@ def set_scout_enabled(symbol: str, enabled: bool):
     save_user_settings(settings)
 
 
+def get_trading_enabled(symbol: str) -> bool:
+    """종목별 자동매매 활성화 상태 조회 (기본값: True)"""
+    settings = load_user_settings()
+    if symbol in settings and "enabled" in settings[symbol]:
+        return settings[symbol]["enabled"]
+    return True
+
+
+def set_trading_enabled(symbol: str, enabled: bool):
+    """종목별 자동매매 활성화 상태 저장"""
+    settings = load_user_settings()
+    if symbol not in settings:
+        settings[symbol] = {}
+    settings[symbol]["enabled"] = enabled
+    save_user_settings(settings)
+
+
 # ========================================
 # Streamlit 앱
 # ========================================
@@ -488,6 +505,21 @@ def main():
             tp = target["tp"]
             sl = target["sl"]
             extra = target.get("extra", "")
+
+            # 종목별 자동매매 토글
+            current_enabled = get_trading_enabled(symbol)
+            new_enabled = st.toggle(
+                f"자동매매",
+                value=current_enabled,
+                key=f"{symbol}_trading_toggle",
+            )
+            if new_enabled != current_enabled:
+                set_trading_enabled(symbol, new_enabled)
+                st.rerun()
+
+            if not current_enabled:
+                st.warning(f"**{symbol}** - {name} (자동매매 OFF)")
+                st.caption("매수 비활성화 (익절/손절은 동작)")
 
             try:
                 # 현재가 조회

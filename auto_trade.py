@@ -877,6 +877,12 @@ def get_target_config(symbol: str) -> dict:
         config["scout_enabled"] = user_scout
         print(f"[설정] {symbol} 정찰병: {'ON' if user_scout else 'OFF'} (사용자 설정)")
 
+    user_enabled = get_user_setting(symbol, "enabled")
+    if user_enabled is not None:
+        config["enabled"] = user_enabled
+    else:
+        config["enabled"] = True  # 기본값: 활성화
+
     return config
 
 
@@ -1251,11 +1257,15 @@ def main():
     # 종목별 전략 출력
     strategy_lines = []
     for t in TARGETS:
+        symbol = t["symbol"]
+        config = get_target_config(symbol)
+        enabled = config.get("enabled", True)
         s = t.get("strategy", "pullback")
         s_name = "눌림목" if s == "pullback" else "반등"
         tp = t.get("take_profit", 10.0)
         sl = t.get("stop_loss", -5.0)
-        line = f"{t['symbol']}: {s_name} (익절 +{tp}%, 손절 {sl}%)"
+        status = "ON" if enabled else "OFF"
+        line = f"{symbol} [{status}]: {s_name} (익절 +{tp}%, 손절 {sl}%)"
         strategy_lines.append(line)
         print(f"  {line}")
 
@@ -1278,10 +1288,20 @@ def main():
         # 3. 각 종목 매수 체크
         buy_results = []
         for target in TARGETS:
+            symbol = target["symbol"]
+            config = get_target_config(symbol)
+            if not config.get("enabled", True):
+                print(f"\n[스킵] {symbol}: 자동매매 비활성화됨")
+                buy_results.append({
+                    "symbol": symbol,
+                    "action": "SKIP",
+                    "reason": "자동매매 OFF",
+                })
+                continue
             result = process_buy(
                 overseas=overseas,
                 slack=slack,
-                symbol=target["symbol"],
+                symbol=symbol,
                 exchange=target["exchange"],
             )
             buy_results.append(result)
