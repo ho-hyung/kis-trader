@@ -5,6 +5,7 @@
 
 import os
 import json
+import subprocess
 import requests
 import streamlit as st
 import pandas as pd
@@ -350,13 +351,32 @@ def load_user_settings() -> dict:
 
 
 def save_user_settings(settings: dict):
-    """사용자 설정 저장"""
+    """사용자 설정 저장 후 GitHub에 자동 반영"""
     try:
         with open(SETTINGS_FILE, "w") as f:
             json.dump(settings, f, indent=2)
-        return True
     except Exception:
         return False
+
+    # GitHub Actions에서 최신 설정을 사용하도록 자동 commit & push
+    try:
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        subprocess.run(
+            ["git", "add", SETTINGS_FILE],
+            cwd=repo_dir, capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "chore: update trading settings"],
+            cwd=repo_dir, capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "push"],
+            cwd=repo_dir, capture_output=True, timeout=30,
+        )
+    except Exception:
+        pass  # push 실패해도 로컬 설정은 저장됨
+
+    return True
 
 
 def get_scout_enabled(symbol: str) -> bool:

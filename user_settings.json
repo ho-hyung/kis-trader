@@ -1,5 +1,8 @@
 {
   "ORCL": {
     "scout_enabled": true
+  },
+  "RKLB": {
+    "enabled": false
   }
 }
