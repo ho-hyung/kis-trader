@@ -915,11 +915,10 @@ def check_exit_conditions(overseas: KisOverseas, slack: SlackBot) -> list:
                 print(f"\n{symbol}: TARGETS에 없음 - 수동 관리 (건너뜀)")
                 continue
 
-            # 자동매매 비활성화된 종목은 익절/손절도 건너뛰기
+            # 자동매매 OFF여도 익절/손절은 계속 동작 (보유 종목 보호)
             config_check = get_target_config(symbol)
             if not config_check.get("enabled", True):
-                print(f"\n{symbol}: 자동매매 OFF - 익절/손절 건너뜀")
-                continue
+                print(f"\n{symbol}: 자동매매 OFF (매수 중단) - 익절/손절은 계속 동작")
 
             quantity = holding["quantity"]
             avg_price = holding["avg_price"]
